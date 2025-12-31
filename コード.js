@@ -4,6 +4,54 @@
 // モデル名を変更しやすいように定数化
 const MODEL_NAME = 'gemini-2.5-flash-lite'; 
 
+const MF_TAX_CATEGORY = '課税仕入 10%';
+const MF_CARD_SUB_ACCOUNT = '三井住友ゴールドカード';
+const MF_CSV_HEADERS = [
+  '取引No',
+  '取引日',
+  '借方勘定科目',
+  '借方補助科目',
+  '借方部門',
+  '借方取引先',
+  '借方税区分',
+  '借方インボイス',
+  '借方金額(円)',
+  '借方税額',
+  '貸方勘定科目',
+  '貸方補助科目',
+  '貸方部門',
+  '貸方取引先',
+  '貸方税区分',
+  '貸方インボイス',
+  '貸方金額(円)',
+  '貸方税額',
+  '摘要',
+  '仕訳メモ',
+  'タグ',
+  'MF仕訳タイプ',
+  '決算整理仕訳',
+  '作成日時',
+  '作成者',
+  '最終更新日時',
+  '最終更新者'
+];
+const MF_ACCOUNT_CANDIDATES = [
+  { name: '旅費', example: '新幹線代、飛行機代' },
+  { name: '交通費', example: '電車・バス・タクシー代、Suicaチャージ、駐車料金' },
+  { name: '車両費', example: 'ガソリン代、洗車代' },
+  { name: '賃借料', example: '会議室代' },
+  { name: '会議費', example: '打ち合わせに伴う喫茶代、弁当代、飲食代' },
+  { name: '新聞図書費', example: '書籍、新聞、有料メルマガ、業界紙の購読料' },
+  { name: '運搬費', example: '宅急便、郵送の送料、梱包資材' },
+  { name: '租税公課', example: '印紙代' },
+  { name: '消耗品費', example: '10万円以下の消耗品、事務用品、文房具' },
+  { name: '未入力', example: '上記のいずれにも当てはまらない少額の費用' }
+];
+const MF_ACCOUNT_CANDIDATE_NAMES = MF_ACCOUNT_CANDIDATES.map((item) => item.name);
+const MF_ACCOUNT_CANDIDATE_GUIDE = MF_ACCOUNT_CANDIDATES
+  .map((item) => `${item.name}：${item.example}`)
+  .join('\n');
+
 // ※APIキーは「スクリプトプロパティ」から、フォルダIDは「設定」シートから読み込みます
 
 // ==================================================
@@ -15,6 +63,8 @@ function onOpen() {
     .addItem('1. ドライブをスキャンして案を出す', 'scanToSheet')
     .addSeparator()
     .addItem('2. 記入された名前を反映する', 'applyRenames')
+    .addSeparator()
+    .addItem('3. マネフォ用解析', 'analyzeMoneyForward')
     .addSeparator()
     .addItem('指定フォルダに移動', 'moveFilesToSpecifiedFolder')
     .addSeparator()
@@ -243,17 +293,7 @@ function scanToSheet() {
 
     if (existingIds.includes(id)) continue;
     
-    // ★変更点: 画像(JPEG/PNG/HEIC)に加えて、PDFも許可するように修正
-    // HEIC/HEIFはMimeType定数にない場合があるので文字列で指定
-    const allowedTypes = [
-      MimeType.JPEG, 
-      MimeType.PNG, 
-      MimeType.PDF,
-      'image/heic',
-      'image/heif'
-    ];
-
-    if (!allowedTypes.includes(mimeType)) continue;
+    if (!isAllowedReceiptMimeType_(mimeType)) continue;
     
     if (fileName.match(/^202\d{5}_/)) continue;
 
@@ -431,6 +471,409 @@ function moveFilesToSpecifiedFolder() {
   }
 
   ui.alert(`移動処理が完了しました。\n移動済み: ${movedCount}\n未移動（条件不一致）: ${skippedCount}\nエラー: ${errorCount}`);
+}
+
+// ==================================================
+// マネフォ用解析: CSV出力
+// ==================================================
+function analyzeMoneyForward() {
+  const ui = SpreadsheetApp.getUi();
+
+  const settings = getSettings();
+  if (!settings) return;
+
+  let folder;
+  try {
+    folder = DriveApp.getFolderById(settings.folderId);
+  } catch (e) {
+    ui.alert('フォルダが見つかりません。IDが正しいか確認してください。\n' + e.message);
+    return;
+  }
+
+  const partnerMap = getTradePartnerMap_(ui);
+  const files = folder.getFiles();
+  const rows = [];
+  const errors = [];
+  let transactionNo = 1;
+
+  while (files.hasNext()) {
+    const file = files.next();
+    const mimeType = file.getMimeType();
+    if (!isAllowedReceiptMimeType_(mimeType)) continue;
+
+    try {
+      const nameInfo = parseReceiptFilename_(file.getName());
+      const analysis = analyzeReceiptForMoneyForward_(file, mimeType, settings.apiKey);
+      if (!analysis) {
+        errors.push(`${file.getName()}: 解析失敗`);
+        continue;
+      }
+
+      const merged = mergeReceiptData_(analysis, nameInfo, file);
+      const partnerName = resolvePartnerName_(
+        merged.invoiceNumber,
+        partnerMap,
+        merged.vendorName
+      );
+      const row = buildMoneyForwardRow_(transactionNo, merged, partnerName);
+      rows.push(row);
+      transactionNo++;
+    } catch (e) {
+      console.error(e);
+      errors.push(`${file.getName()}: ${e.message}`);
+    }
+  }
+
+  if (rows.length === 0) {
+    ui.alert('対象ファイルがありませんでした。');
+    return;
+  }
+
+  const csvContent = buildCsvContent_(MF_CSV_HEADERS, rows);
+  const filename = buildMoneyForwardFilename_();
+  showDownloadDialog_(filename, csvContent);
+
+  if (errors.length > 0) {
+    ui.alert(`解析できないファイルがありました。\n${errors.slice(0, 10).join('\n')}`);
+  }
+}
+
+function isAllowedReceiptMimeType_(mimeType) {
+  const allowedTypes = [
+    MimeType.JPEG,
+    MimeType.PNG,
+    MimeType.PDF,
+    'image/heic',
+    'image/heif'
+  ];
+  return allowedTypes.includes(mimeType);
+}
+
+function parseReceiptFilename_(fileName) {
+  const baseName = fileName.replace(/\.[^.]+$/, '');
+  const parts = baseName.split('｜');
+  if (parts.length < 4) return {};
+
+  const paymentMethod = normalizePaymentMethod_(parts[0]);
+  const rawDate = normalizeText_(parts[1]);
+  const date =
+    /^\d{8}$/.test(rawDate) || /^\d{4}[-/]\d{2}[-/]\d{2}$/.test(rawDate)
+      ? normalizeDate_(rawDate)
+      : '';
+  const invoiceNumber = normalizeInvoiceNumber_(parts[2]);
+  const summary = normalizeText_(parts.slice(3).join('｜'));
+
+  return {
+    paymentMethod: paymentMethod,
+    date: date,
+    invoiceNumber: invoiceNumber,
+    summary: summary
+  };
+}
+
+function analyzeReceiptForMoneyForward_(file, mimeType, apiKey) {
+  const blob = file.getBlob();
+  const base64Data = Utilities.base64Encode(blob.getBytes());
+  return callGeminiApiForMoneyForward_(base64Data, mimeType, apiKey);
+}
+
+function callGeminiApiForMoneyForward_(base64Data, mimeType, apiKey) {
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`;
+  const prompt = buildMoneyForwardPrompt_();
+
+  const payload = {
+    "contents": [{
+      "parts": [
+        { "text": prompt },
+        { "inline_data": { "mime_type": mimeType, "data": base64Data } }
+      ]
+    }]
+  };
+
+  const options = {
+    "method": "post",
+    "contentType": "application/json",
+    "payload": JSON.stringify(payload),
+    "muteHttpExceptions": true
+  };
+
+  const response = UrlFetchApp.fetch(endpoint, options);
+  const json = JSON.parse(response.getContentText());
+
+  if (json.error) {
+    Logger.log(`API Error: ${JSON.stringify(json.error)}`);
+    return null;
+  }
+
+  const text = json?.candidates?.[0]?.content?.parts?.[0]?.text;
+  const parsed = extractJsonFromText_(text);
+  return normalizeReceiptData_(parsed);
+}
+
+function buildMoneyForwardPrompt_() {
+  return `
+あなたは経理入力補助です。次のレシート画像/PDFから必要な情報を抽出してください。
+出力はJSONのみ（前後の説明やマークダウンは不要）です。
+
+出力形式:
+{
+  "date": "YYYY/MM/DD",
+  "amount": 12345,
+  "invoiceNumber": "T1234567890123",
+  "vendorName": "取引先名",
+  "summary": "摘要",
+  "paymentMethod": "現金|クレカ|電子マネー",
+  "accountTitle": "勘定科目"
+}
+
+ルール:
+- amount は税込合計の整数。
+- invoiceNumber は見つからない場合は空文字。
+- paymentMethod は「現金」「クレカ」「電子マネー」のいずれか。
+- accountTitle は次の候補から1つだけ選ぶ。
+
+勘定科目候補:
+${MF_ACCOUNT_CANDIDATE_GUIDE}
+  `;
+}
+
+function extractJsonFromText_(text) {
+  if (!text) return null;
+  const cleaned = text.replace(/```(?:json)?/g, '').replace(/```/g, '').trim();
+  const match = cleaned.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  try {
+    return JSON.parse(match[0]);
+  } catch (e) {
+    console.error(e);
+    return null;
+  }
+}
+
+function normalizeReceiptData_(data) {
+  if (!data) return null;
+  return {
+    date: normalizeDate_(data.date),
+    amount: normalizeAmount_(data.amount),
+    invoiceNumber: normalizeInvoiceNumber_(data.invoiceNumber),
+    vendorName: normalizeText_(data.vendorName),
+    summary: normalizeText_(data.summary),
+    paymentMethod: normalizePaymentMethod_(data.paymentMethod),
+    accountTitle: normalizeAccountTitle_(data.accountTitle)
+  };
+}
+
+function normalizePaymentMethod_(value) {
+  const text = normalizeText_(value);
+  if (!text) return '';
+  if (text.includes('クレカ') || text.includes('クレジット') || text.includes('カード')) return 'クレカ';
+  if (text.includes('電子') || text.includes('交通系') || text.includes('IC')) return '電子マネー';
+  if (text.includes('現金')) return '現金';
+  return '';
+}
+
+function normalizeInvoiceNumber_(value) {
+  const text = normalizeText_(value);
+  if (!text) return '';
+  const match = text.match(/T\d{13}/);
+  return match ? match[0] : '';
+}
+
+function normalizeDate_(value) {
+  if (!value) return '';
+  if (Object.prototype.toString.call(value) === '[object Date]') {
+    return formatDate_(value);
+  }
+
+  const text = normalizeText_(value);
+  if (/^\d{8}$/.test(text)) {
+    return `${text.slice(0, 4)}/${text.slice(4, 6)}/${text.slice(6, 8)}`;
+  }
+  if (/^\d{4}[-/]\d{2}[-/]\d{2}$/.test(text)) {
+    return text.replace(/-/g, '/');
+  }
+  const parsed = new Date(text);
+  if (!isNaN(parsed.getTime())) {
+    return formatDate_(parsed);
+  }
+  return '';
+}
+
+function normalizeAmount_(value) {
+  if (value === 0) return 0;
+  if (!value) return 0;
+  const text = String(value).replace(/[^\d]/g, '');
+  return text ? parseInt(text, 10) : 0;
+}
+
+function normalizeText_(value) {
+  if (!value) return '';
+  return String(value).replace(/\s+/g, ' ').trim();
+}
+
+function normalizeAccountTitle_(value) {
+  const text = normalizeText_(value);
+  if (MF_ACCOUNT_CANDIDATE_NAMES.includes(text)) return text;
+  return '未入力';
+}
+
+function mergeReceiptData_(analysis, nameInfo, file) {
+  const date = analysis.date || nameInfo.date || formatDate_(file.getDateCreated());
+  const paymentMethod = nameInfo.paymentMethod || analysis.paymentMethod || '現金';
+  const invoiceNumber = nameInfo.invoiceNumber || analysis.invoiceNumber || '';
+  const summary = analysis.summary || nameInfo.summary || '';
+
+  return {
+    date: date,
+    amount: analysis.amount,
+    invoiceNumber: invoiceNumber,
+    vendorName: analysis.vendorName,
+    summary: summary,
+    paymentMethod: paymentMethod,
+    accountTitle: analysis.accountTitle
+  };
+}
+
+function getTradePartnerMap_(ui) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName('取引先一覧');
+
+  if (!sheet) {
+    sheet = ss.insertSheet('取引先一覧');
+    sheet.getRange('A1:B1').setValues([['登録番号', '取引先名']]);
+    sheet.getRange('A1:B1').setBackground('#d9ead3').setFontWeight('bold');
+    sheet.setColumnWidth(1, 180);
+    sheet.setColumnWidth(2, 240);
+    ui.alert('「取引先一覧」シートを作成しました。\nA列に登録番号、B列に取引先名を入力してください。');
+    return {};
+  }
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return {};
+
+  const header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const invoiceIndex = header.indexOf('登録番号');
+  const nameIndex = header.indexOf('取引先名');
+
+  if (invoiceIndex === -1 || nameIndex === -1) {
+    ui.alert('「取引先一覧」シートに「登録番号」「取引先名」の列が必要です。');
+    return {};
+  }
+
+  const values = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+  const map = {};
+  for (const row of values) {
+    const invoiceNumber = normalizeInvoiceNumber_(row[invoiceIndex]);
+    const partnerName = normalizeText_(row[nameIndex]);
+    if (invoiceNumber && partnerName) {
+      map[invoiceNumber] = partnerName;
+    }
+  }
+  return map;
+}
+
+function resolvePartnerName_(invoiceNumber, partnerMap, vendorName) {
+  if (invoiceNumber && partnerMap[invoiceNumber]) return partnerMap[invoiceNumber];
+  if (vendorName) return vendorName;
+  return '';
+}
+
+function buildMoneyForwardRow_(transactionNo, data, partnerName) {
+  const amount = data.amount || 0;
+  const creditAccount =
+    data.paymentMethod === 'クレカ' ? '未払金' : '役員借入金';
+  const creditSubAccount =
+    data.paymentMethod === 'クレカ' ? MF_CARD_SUB_ACCOUNT : '';
+
+  return [
+    transactionNo,
+    data.date,
+    data.accountTitle,
+    '',
+    '',
+    partnerName,
+    MF_TAX_CATEGORY,
+    data.invoiceNumber,
+    amount,
+    0,
+    creditAccount,
+    creditSubAccount,
+    '',
+    '',
+    MF_TAX_CATEGORY,
+    '',
+    amount,
+    0,
+    data.summary || partnerName,
+    '',
+    '',
+    '',
+    '',
+    '',
+    '',
+    '',
+    ''
+  ];
+}
+
+function buildMoneyForwardFilename_() {
+  const now = new Date();
+  const stamp = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyyMMdd_HHmm');
+  return `mf_journal_${stamp}.csv`;
+}
+
+function formatDate_(dateValue) {
+  return Utilities.formatDate(dateValue, Session.getScriptTimeZone(), 'yyyy/MM/dd');
+}
+
+function buildCsvContent_(headers, rows) {
+  const lines = [];
+  lines.push(headers.map(escapeCsvValue_).join(','));
+  for (const row of rows) {
+    lines.push(row.map(escapeCsvValue_).join(','));
+  }
+  return `\uFEFF${lines.join('\n')}`;
+}
+
+function escapeCsvValue_(value) {
+  if (value === null || value === undefined) return '';
+  const text = String(value);
+  if (text.includes('"')) {
+    const escaped = text.replace(/"/g, '""');
+    return `"${escaped}"`;
+  }
+  if (text.includes(',') || text.includes('\n')) {
+    return `"${text}"`;
+  }
+  return text;
+}
+
+function showDownloadDialog_(filename, csvContent) {
+  const html = `
+    <html>
+      <body>
+        <script>
+          const csv = ${JSON.stringify(csvContent)};
+          const filename = ${JSON.stringify(filename)};
+          const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = filename;
+          document.body.appendChild(link);
+          link.click();
+          setTimeout(() => {
+            URL.revokeObjectURL(url);
+            google.script.host.close();
+          }, 100);
+        </script>
+      </body>
+    </html>
+  `;
+  SpreadsheetApp.getUi().showModalDialog(
+    HtmlService.createHtmlOutput(html).setWidth(200).setHeight(80),
+    'CSVをダウンロード'
+  );
 }
 
 // ==================================================
