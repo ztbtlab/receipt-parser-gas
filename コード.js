@@ -36,26 +36,14 @@ const MF_CSV_HEADERS = [
   '最終更新者'
 ];
 const MF_ACCOUNT_CANDIDATES = [
-  { name: '役員報酬', example: '（法人）役員への給与' },
-  { name: '給料賃金', example: '従業員への給与、残業代、手当' },
-  { name: '地代家賃', example: '事務所や店舗の家賃、駐車場代' },
-  { name: '旅費交通費', example: '電車・バス・タクシー代、出張宿泊費、Suicaチャージ' },
-  { name: '通信費', example: 'インターネット代、電話代、切手、サーバー代、MFクラウド利用料' },
-  { name: '消耗品費', example: '10万円未満の備品（文房具、PC周辺機器、名刺など）' },
-  { name: '接待交際費', example: '取引先との飲食代、お歳暮、お中元' },
-  { name: '会議費', example: '打ち合わせに伴う喫茶代、弁当代' },
-  { name: '水道光熱費', example: '電気代、ガス代、水道代' },
-  { name: '修繕費', example: '備品や設備の修理代、パソコンの修理など' },
+  { name: '旅費', example: '新幹線代、飛行機代' },
+  { name: '交通費', example: '電車・バス・タクシー代、Suicaチャージ、駐車料金' },
+  { name: '車両費', example: 'ガソリン代、洗車代' },
+  { name: '会議費', example: '打ち合わせに伴う喫茶代、弁当代、飲食代' },
   { name: '新聞図書費', example: '書籍、新聞、有料メルマガ、業界紙の購読料' },
-  { name: '広告宣伝費', example: 'チラシ、Web広告、求人広告、看板製作費' },
-  { name: '荷造運賃', example: '宅急便、郵送の送料、梱包資材' },
-  { name: '支払手数料', example: '銀行振込手数料、代引き手数料、専門家への報酬' },
-  { name: '外注工賃', example: '外部ライター、デザイナー、プログラマーへの委託費' },
-  { name: '租税公課', example: '固定資産税、印紙代、自動車税（※所得税・住民税は含みません）' },
-  { name: '損害保険料', example: '火災保険、自動車保険、賠償責任保険' },
-  { name: '福利厚生費', example: '従業員の健康診断、社員旅行、お茶菓子代' },
-  { name: '減価償却費', example: '10万円以上の固定資産を数年かけて経費化するもの' },
-  { name: '雑費', example: '上記のいずれにも当てはまらない少額の費用' }
+  { name: '運搬費', example: '宅急便、郵送の送料、梱包資材' },
+  { name: '租税公課', example: '印紙代' },
+  { name: '消耗品費', example: '上記のいずれにも当てはまらない少額の費用' }
 ];
 const MF_ACCOUNT_CANDIDATE_NAMES = MF_ACCOUNT_CANDIDATES.map((item) => item.name);
 const MF_ACCOUNT_CANDIDATE_GUIDE = MF_ACCOUNT_CANDIDATES
@@ -724,7 +712,7 @@ function normalizeText_(value) {
 function normalizeAccountTitle_(value) {
   const text = normalizeText_(value);
   if (MF_ACCOUNT_CANDIDATE_NAMES.includes(text)) return text;
-  return '雑費';
+  return '消耗品費';
 }
 
 function mergeReceiptData_(analysis, nameInfo, file) {
