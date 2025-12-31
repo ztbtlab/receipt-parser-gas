@@ -303,17 +303,7 @@ function scanToSheet() {
 
     if (existingIds.includes(id)) continue;
     
-    // ★変更点: 画像(JPEG/PNG/HEIC)に加えて、PDFも許可するように修正
-    // HEIC/HEIFはMimeType定数にない場合があるので文字列で指定
-    const allowedTypes = [
-      MimeType.JPEG, 
-      MimeType.PNG, 
-      MimeType.PDF,
-      'image/heic',
-      'image/heif'
-    ];
-
-    if (!allowedTypes.includes(mimeType)) continue;
+    if (!isAllowedReceiptMimeType_(mimeType)) continue;
     
     if (fileName.match(/^202\d{5}_/)) continue;
 
@@ -533,8 +523,7 @@ function analyzeMoneyForward() {
       const partnerName = resolvePartnerName_(
         merged.invoiceNumber,
         partnerMap,
-        merged.vendorName,
-        merged.summary
+        merged.vendorName
       );
       const row = buildMoneyForwardRow_(transactionNo, merged, partnerName);
       rows.push(row);
@@ -793,10 +782,9 @@ function getTradePartnerMap_(ui) {
   return map;
 }
 
-function resolvePartnerName_(invoiceNumber, partnerMap, vendorName, summary) {
+function resolvePartnerName_(invoiceNumber, partnerMap, vendorName) {
   if (invoiceNumber && partnerMap[invoiceNumber]) return partnerMap[invoiceNumber];
   if (vendorName) return vendorName;
-  if (summary) return summary;
   return '';
 }
 
