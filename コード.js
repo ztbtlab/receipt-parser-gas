@@ -39,11 +39,13 @@ const MF_ACCOUNT_CANDIDATES = [
   { name: '旅費', example: '新幹線代、飛行機代' },
   { name: '交通費', example: '電車・バス・タクシー代、Suicaチャージ、駐車料金' },
   { name: '車両費', example: 'ガソリン代、洗車代' },
+  { name: '賃借料', example: '会議室代' },
   { name: '会議費', example: '打ち合わせに伴う喫茶代、弁当代、飲食代' },
   { name: '新聞図書費', example: '書籍、新聞、有料メルマガ、業界紙の購読料' },
   { name: '運搬費', example: '宅急便、郵送の送料、梱包資材' },
   { name: '租税公課', example: '印紙代' },
-  { name: '消耗品費', example: '上記のいずれにも当てはまらない少額の費用' }
+  { name: '消耗品費', example: '10万円以下の消耗品、事務用品、文房具' },
+  { name: '未入力', example: '上記のいずれにも当てはまらない少額の費用' }
 ];
 const MF_ACCOUNT_CANDIDATE_NAMES = MF_ACCOUNT_CANDIDATES.map((item) => item.name);
 const MF_ACCOUNT_CANDIDATE_GUIDE = MF_ACCOUNT_CANDIDATES
@@ -712,7 +714,7 @@ function normalizeText_(value) {
 function normalizeAccountTitle_(value) {
   const text = normalizeText_(value);
   if (MF_ACCOUNT_CANDIDATE_NAMES.includes(text)) return text;
-  return '消耗品費';
+  return '未入力';
 }
 
 function mergeReceiptData_(analysis, nameInfo, file) {
