@@ -1,0 +1,495 @@
+// ==================================================
+// 設定エリア
+// ==================================================
+// モデル名を変更しやすいように定数化
+const MODEL_NAME = 'gemini-2.5-flash-lite'; 
+
+// ※APIキーは「スクリプトプロパティ」から、フォルダIDは「設定」シートから読み込みます
+
+// ==================================================
+// メニュー作成 (スプレッドシートを開いた時に実行)
+// ==================================================
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('🧾 レシート解析')
+    .addItem('1. ドライブをスキャンして案を出す', 'scanToSheet')
+    .addSeparator()
+    .addItem('2. 記入された名前を反映する', 'applyRenames')
+    .addSeparator()
+    .addItem('指定フォルダに移動', 'moveFilesToSpecifiedFolder')
+    .addSeparator()
+    .addItem('⚙️ APIキー設定', 'setApiKey')
+    .addToUi();
+}
+
+// ==================================================
+// 解析結果シートの列構成を整える
+// A:ファイルID, B:リンク, C:元ファイル名, D:変更案, E:移動先, F:ステータス
+// ==================================================
+function ensureResultSheetLayout_(sheet) {
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow(['ファイルID', 'リンク', '元ファイル名', '変更案（修正可）', '移動先', 'ステータス']);
+    sheet.setRowHeight(1, 30);
+    sheet.setColumnWidth(2, 60);
+    sheet.setColumnWidth(4, 300);
+    sheet.setColumnWidth(5, 180);
+    sheet.setColumnWidth(6, 120);
+    sheet.setFrozenRows(1);
+    return;
+  }
+
+  const headerRow = sheet.getRange(1, 1, 1, Math.max(6, sheet.getLastColumn())).getValues()[0];
+  const destinationCol = headerRow.indexOf('移動先') + 1;
+
+  // 旧フォーマット（E列=ステータス）からの移行: D列の後ろに「移動先」を挿入
+  if (destinationCol === 0) {
+    sheet.insertColumnAfter(4);
+    sheet.getRange(1, 5).setValue('移動先');
+  }
+
+  // 「ステータス」が無い場合は末尾に追加（通常は移動先追加でFに移動済み）
+  const headerRowAfter = sheet.getRange(1, 1, 1, Math.max(6, sheet.getLastColumn())).getValues()[0];
+  const statusColAfter = headerRowAfter.indexOf('ステータス') + 1;
+  if (statusColAfter === 0) {
+    sheet.insertColumnAfter(5);
+    sheet.getRange(1, 6).setValue('ステータス');
+  }
+
+  sheet.setRowHeight(1, 30);
+  sheet.setColumnWidth(2, 60);
+  sheet.setColumnWidth(4, 300);
+  sheet.setColumnWidth(5, 180);
+  sheet.setColumnWidth(6, 120);
+  sheet.setFrozenRows(1);
+}
+
+// ==================================================
+// APIキーをスクリプトプロパティに保存する関数
+// ==================================================
+function setApiKey() {
+  const ui = SpreadsheetApp.getUi();
+  const result = ui.prompt(
+    'Gemini APIキー設定',
+    'Gemini APIキーを入力してください：\n（以前のキーは上書きされます）',
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (result.getSelectedButton() == ui.Button.OK) {
+    const key = result.getResponseText().trim();
+    if (key) {
+      // スクリプトプロパティに保存
+      PropertiesService.getScriptProperties().setProperty('GEMINI_API_KEY', key);
+      ui.alert('APIキーを安全に保存しました。\nこれ以降、シート上にキーを記載する必要はありません。');
+    } else {
+      ui.alert('キーが空のため保存しませんでした。');
+    }
+  }
+}
+
+// ==================================================
+// 設定値を取得する関数
+// ==================================================
+function getSettings() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let configSheet = ss.getSheetByName('設定');
+  
+  // 設定シートがない場合は作成
+  if (!configSheet) {
+    configSheet = ss.insertSheet('設定');
+    // ヘッダーと初期値を設定
+    configSheet.getRange('A1:B1').setValues([['項目名', '設定値']]);
+    configSheet.getRange('A2:B2').setValues([
+      ['対象フォルダID', '']
+    ]);
+    
+    // 見た目を整える
+    configSheet.getRange('A1:B1').setBackground('#efefef').setFontWeight('bold');
+    configSheet.setColumnWidth(1, 150);
+    configSheet.setColumnWidth(2, 400);
+    
+    SpreadsheetApp.getUi().alert('「設定」シートを作成しました。\nB2セルに「フォルダID」を入力してください。\nAPIキーはメニューの「⚙️ APIキー設定」から登録してください。');
+    return null;
+  }
+  
+  // フォルダIDはシートから取得
+  const folderId = configSheet.getRange('B2').getValue();
+  
+  // APIキーはスクリプトプロパティから取得
+  const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+  
+  // バリデーション
+  let errorMsg = [];
+  if (!folderId) errorMsg.push('「設定」シートのB2セルに、対象のフォルダIDを入力してください。');
+  if (!apiKey) errorMsg.push('Gemini APIキーが設定されていません。\nメニューの「⚙️ APIキー設定」からキーを登録してください。');
+  
+  if (errorMsg.length > 0) {
+    SpreadsheetApp.getUi().alert(errorMsg.join('\n'));
+    return null;
+  }
+  
+  return { folderId: folderId, apiKey: apiKey };
+}
+
+// ==================================================
+// 置換ルールシートからルールを取得する関数
+// ==================================================
+function getReplacementRules() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName('置換ルール');
+  
+  // シートがない場合は作成
+  if (!sheet) {
+    sheet = ss.insertSheet('置換ルール');
+    sheet.getRange('A1:B1').setValues([['検索キーワード（これを含んでいたら）', '置換後の概要（これにする）']]);
+    
+    // サンプルデータ
+    sheet.getRange('A2:B4').setValues([
+      ['ピカピカ', 'ガソリン'],
+      ['ENEOS', 'ガソリン'],
+      ['セブンイレブン', '食費']
+    ]);
+    
+    sheet.getRange('A1:B1').setBackground('#d9ead3').setFontWeight('bold');
+    sheet.setColumnWidth(1, 250);
+    sheet.setColumnWidth(2, 200);
+    SpreadsheetApp.getUi().alert('「置換ルール」シートを作成しました。\nこのシートに変換ルールを登録すると、AIの抽出結果を自動で書き換えます。');
+  }
+  
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+  
+  // A列とB列の値を取得して返す
+  return sheet.getRange(2, 1, lastRow - 1, 2).getValues(); 
+}
+
+// ==================================================
+// 置換ロジックを適用する関数（インボイス番号対応版）
+// ==================================================
+function applyReplacement(nameText, rules) {
+  if (!nameText || !rules || rules.length === 0) return nameText;
+
+  // 全角の「｜」で分割
+  const parts = nameText.split('｜');
+  
+  // フォーマットが「支払方法｜日付｜インボイス｜概要」の4要素でない場合は何もしない
+  if (parts.length < 4) return nameText;
+  
+  // [0]:支払方法, [1]:日付, [2]:インボイス番号, [3]:概要
+  let summary = parts[3]; // 概要部分
+  
+  // ルール表を上から順に走査
+  for (const rule of rules) {
+    const keyword = rule[0];      // A列：検索キーワード
+    const replacement = rule[1];  // B列：置換後の文字
+    
+    // キーワードが空でなく、概要にそのキーワードが含まれていれば置換
+    if (keyword && String(summary).includes(keyword)) {
+      summary = replacement;
+      // 1つヒットしたら終了（上にあるルールが優先）
+      break; 
+    }
+  }
+  
+  // 再結合して返す
+  return `${parts[0]}｜${parts[1]}｜${parts[2]}｜${summary}`;
+}
+
+// ==================================================
+// 機能1: ドライブをスキャンしてシートに書き出す
+// ==================================================
+function scanToSheet() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const ui = SpreadsheetApp.getUi();
+
+  // 設定を取得
+  const settings = getSettings();
+  if (!settings) return; 
+
+  const currentSheetName = sheet.getName();
+  if (currentSheetName === '設定' || currentSheetName === '置換ルール' || currentSheetName === '移動先リスト') {
+    ui.alert('解析結果を出力したいシート（「シート1」など）を開いてから実行してください。');
+    return;
+  }
+
+  // 置換ルールを読み込む
+  const replacementRules = getReplacementRules();
+
+  ensureResultSheetLayout_(sheet);
+
+  // 既存のファイルIDを取得
+  const lastRow = sheet.getLastRow();
+  let existingIds = [];
+  if (lastRow > 1) {
+    const data = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+    existingIds = data.flat();
+  }
+
+  let folder;
+  try {
+    folder = DriveApp.getFolderById(settings.folderId);
+  } catch (e) {
+    ui.alert('フォルダが見つかりません。IDが正しいか確認してください。\n' + e.message);
+    return;
+  }
+
+  const files = folder.getFiles();
+  let processCount = 0;
+
+  while (files.hasNext()) {
+    const file = files.next();
+    const id = file.getId();
+    const fileName = file.getName();
+    const mimeType = file.getMimeType();
+
+    if (existingIds.includes(id)) continue;
+    
+    // ★変更点: 画像(JPEG/PNG/HEIC)に加えて、PDFも許可するように修正
+    // HEIC/HEIFはMimeType定数にない場合があるので文字列で指定
+    const allowedTypes = [
+      MimeType.JPEG, 
+      MimeType.PNG, 
+      MimeType.PDF,
+      'image/heic',
+      'image/heif'
+    ];
+
+    if (!allowedTypes.includes(mimeType)) continue;
+    
+    if (fileName.match(/^202\d{5}_/)) continue;
+
+    try {
+      const blob = file.getBlob();
+      const base64Data = Utilities.base64Encode(blob.getBytes());
+      
+      // HYPERLINK関数でリンクを作成
+      const thumbnailFormula = `=HYPERLINK("https://drive.google.com/file/d/${id}/view", "開く")`;
+
+      // Gemini API呼び出し
+      let aiSuggestedName = callGeminiApi(base64Data, mimeType, settings.apiKey);
+      
+      let newNameCandidate = "";
+      let status = "解析失敗";
+
+      if (aiSuggestedName) {
+        // AIの結果に対して置換ルールを適用
+        aiSuggestedName = applyReplacement(aiSuggestedName, replacementRules);
+
+        const extension = fileName.substring(fileName.lastIndexOf('.'));
+        newNameCandidate = aiSuggestedName + extension;
+        status = "未処理";
+      }
+
+      sheet.appendRow([id, thumbnailFormula, fileName, newNameCandidate, "", status]);
+      sheet.setRowHeight(sheet.getLastRow(), 30);
+      processCount++;
+
+    } catch (e) {
+      console.error(e);
+      sheet.appendRow([id, "", fileName, "エラー発生", "", e.toString()]);
+    }
+  }
+
+  if (processCount === 0) {
+    ui.alert('新しいファイルは見つかりませんでした。');
+  } else {
+    ui.alert(`${processCount} 件のファイルをスキャンしました。\n「変更案」列を確認・修正してから、メニューの「2. 反映する」を実行してください。`);
+  }
+}
+
+// ==================================================
+// 機能2: シートの内容をファイル名に反映する
+// ==================================================
+function applyRenames() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const ui = SpreadsheetApp.getUi();
+
+  ensureResultSheetLayout_(sheet);
+  
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    ui.alert('データがありません。');
+    return;
+  }
+
+  const range = sheet.getRange(2, 1, lastRow - 1, 6);
+  const data = range.getValues();
+  
+  let successCount = 0;
+
+  for (let i = 0; i < data.length; i++) {
+    const row = data[i];
+    const fileId = row[0];
+    const newName = row[3];
+    const status = row[5];
+
+    if (status === "未処理" && newName !== "" && fileId !== "") {
+      try {
+        const file = DriveApp.getFileById(fileId);
+        const oldName = file.getName();
+        
+        if (oldName !== newName) {
+          file.setName(newName);
+          sheet.getRange(i + 2, 6).setValue("完了");
+          sheet.getRange(i + 2, 3).setValue(newName);
+          successCount++;
+        } else {
+          sheet.getRange(i + 2, 6).setValue("変更なし");
+        }
+
+      } catch (e) {
+        sheet.getRange(i + 2, 6).setValue("エラー: " + e.message);
+      }
+    }
+  }
+
+  ui.alert(`${successCount} 件のファイル名を変更しました。`);
+}
+
+// ==================================================
+// 移動先リストシートから [キーワード -> フォルダID] を取得
+// ==================================================
+function getDestinationFolderIdByKeyword_(keyword) {
+  if (!keyword) return null;
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName('移動先リスト');
+
+  if (!sheet) {
+    sheet = ss.insertSheet('移動先リスト');
+    sheet.getRange('A1:B1').setValues([['キーワード', 'フォルダID']]);
+    sheet.getRange('A1:B1').setBackground('#fff2cc').setFontWeight('bold');
+    sheet.setColumnWidth(1, 200);
+    sheet.setColumnWidth(2, 420);
+    SpreadsheetApp.getUi().alert('「移動先リスト」シートを作成しました。\nA列にキーワード、B列に移動先フォルダIDを設定してください。');
+    return null;
+  }
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return null;
+
+  const values = sheet.getRange(2, 1, lastRow - 1, 2).getValues();
+  for (const [key, folderId] of values) {
+    if (!key || !folderId) continue;
+    if (String(key).trim() === String(keyword).trim()) return String(folderId).trim();
+  }
+  return null;
+}
+
+// ==================================================
+// 指定フォルダに移動（E列=キーワード, F列=ステータス）
+// ==================================================
+function moveFilesToSpecifiedFolder() {
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  const ui = SpreadsheetApp.getUi();
+
+  const currentSheetName = sheet.getName();
+  if (currentSheetName === '設定' || currentSheetName === '置換ルール' || currentSheetName === '移動先リスト') {
+    ui.alert('解析結果のシート（「シート1」など）を開いてから実行してください。');
+    return;
+  }
+
+  ensureResultSheetLayout_(sheet);
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    ui.alert('データがありません。');
+    return;
+  }
+
+  const data = sheet.getRange(2, 1, lastRow - 1, 6).getValues();
+  let movedCount = 0;
+  let skippedCount = 0;
+  let errorCount = 0;
+
+  for (let i = 0; i < data.length; i++) {
+    const row = data[i];
+    const fileId = row[0];
+    const destinationKeyword = row[4];
+    const status = row[5];
+
+    if (!fileId || !destinationKeyword || status === '移動済み') {
+      skippedCount++;
+      continue;
+    }
+
+    const destinationFolderId = getDestinationFolderIdByKeyword_(destinationKeyword);
+    if (!destinationFolderId) {
+      skippedCount++;
+      continue;
+    }
+
+    try {
+      const file = DriveApp.getFileById(fileId);
+      const folder = DriveApp.getFolderById(destinationFolderId);
+      file.moveTo(folder);
+      sheet.getRange(i + 2, 6).setValue('移動済み');
+      movedCount++;
+    } catch (e) {
+      console.error(e);
+      errorCount++;
+    }
+  }
+
+  ui.alert(`移動処理が完了しました。\n移動済み: ${movedCount}\n未移動（条件不一致）: ${skippedCount}\nエラー: ${errorCount}`);
+}
+
+// ==================================================
+// Gemini API 呼び出し関数（インボイス・iD・PDF・HEIC対応）
+// ==================================================
+function callGeminiApi(base64Data, mimeType, apiKey) {
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`;
+
+  const prompt = `
+    このファイル（画像またはPDF）はレシート、または領収書です。
+    内容を解析して、ファイル名として使うための文字列を作成してください。
+
+    【出力ルール】
+    1. フォーマットは「支払方法｜YYYYMMDD｜インボイス番号｜概要」としてください。
+       ※区切り文字は全角の縦線「｜」を使用してください。
+    2. 日付（YYYYMMDD）はレシートの日付を使用してください。西暦が不明な場合は現在に近い年を推測してください。
+    3. 「インボイス番号」は「T」から始まる13桁の数字（登録番号）を抽出してください。
+       ※見つからない、または判読できない場合は「T0000000000000」としてください。
+    4. 支払方法は「現金」「クレカ」「電子マネー」のいずれかに分類してください。
+       ※特に「iD」での支払いは「クレカ」として判定してください。
+       ※不明な場合は「現金」としてください。
+    5. 「概要」は、レシートの内容から「店名」または「購入した主な商品・サービス（例：ガソリン代、食料品、書籍代）」を短く抽出してください。
+    6. 余計な説明やマークダウン記号は一切不要です。ファイル名の文字列のみを返してください。
+    
+    【例】
+    クレカ｜20231126｜T1234567890123｜スーパーの店名
+    現金｜20240105｜T0000000000000｜タクシー代
+    電子マネー｜20250815｜T9876543210987｜ガソリン代
+  `;
+
+  const payload = {
+    "contents": [{
+      "parts": [
+        { "text": prompt },
+        { "inline_data": { "mime_type": mimeType, "data": base64Data } }
+      ]
+    }]
+  };
+
+  const options = {
+    "method": "post",
+    "contentType": "application/json",
+    "payload": JSON.stringify(payload),
+    "muteHttpExceptions": true
+  };
+
+  const response = UrlFetchApp.fetch(endpoint, options);
+  const json = JSON.parse(response.getContentText());
+
+  if (json.error) {
+    Logger.log(`API Error: ${JSON.stringify(json.error)}`);
+    return null;
+  }
+
+  if (json.candidates && json.candidates[0].content && json.candidates[0].content.parts) {
+    let text = json.candidates[0].content.parts[0].text;
+    text = text.trim().replace(/\n/g, '').replace(/`/g, '');
+    return text;
+  }
+  
+  return null;
+}

@@ -1,0 +1,24 @@
+{
+  "name": "receipt-parser-gas",
+  "version": "1.0.0",
+  "description": "レシート解析ツールをGoogle Apps Script (GAS) で開発するためのリポジトリです。",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ztbtlab/receipt-parser-gas.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/ztbtlab/receipt-parser-gas/issues"
+  },
+  "homepage": "https://github.com/ztbtlab/receipt-parser-gas#readme",
+  "devDependencies": {
+    "@google/clasp": "^3.1.3"
+  }
+}
