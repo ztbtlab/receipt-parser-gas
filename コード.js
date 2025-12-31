@@ -66,6 +66,8 @@ function onOpen() {
     .addSeparator()
     .addItem('3. マネフォ用解析', 'analyzeMoneyForward')
     .addSeparator()
+    .addItem('4. マネフォCSVダウンロード', 'downloadMoneyForwardCsv')
+    .addSeparator()
     .addItem('指定フォルダに移動', 'moveFilesToSpecifiedFolder')
     .addSeparator()
     .addItem('⚙️ APIキー設定', 'setApiKey')
@@ -524,18 +526,70 @@ function analyzeMoneyForward() {
     }
   }
 
-  if (rows.length === 0) {
-    ui.alert('対象ファイルがありませんでした。');
-    return;
+  const sheet = getMoneyForwardSheet_(ui);
+  resetMoneyForwardSheet_(sheet);
+  if (rows.length > 0) {
+    sheet.getRange(2, 1, rows.length, MF_CSV_HEADERS.length).setValues(rows);
   }
 
-  const csvContent = buildCsvContent_(MF_CSV_HEADERS, rows);
-  const filename = buildMoneyForwardFilename_();
-  showDownloadDialog_(filename, csvContent);
+  if (rows.length === 0) {
+    ui.alert('対象ファイルがありませんでした。');
+  } else {
+    ui.alert(`${rows.length} 件のレシートを「マネフォ用」シートに更新しました。`);
+  }
 
   if (errors.length > 0) {
     ui.alert(`解析できないファイルがありました。\n${errors.slice(0, 10).join('\n')}`);
   }
+}
+
+function getMoneyForwardSheet_(ui) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName('マネフォ用');
+
+  if (!sheet) {
+    sheet = ss.insertSheet('マネフォ用');
+    ui.alert('「マネフォ用」シートを作成しました。');
+  }
+
+  return sheet;
+}
+
+function resetMoneyForwardSheet_(sheet) {
+  const filter = sheet.getFilter();
+  if (filter) filter.remove();
+  sheet.clearContents();
+  sheet.getRange(1, 1, 1, MF_CSV_HEADERS.length).setValues([MF_CSV_HEADERS]);
+  sheet.setFrozenRows(1);
+}
+
+function downloadMoneyForwardCsv() {
+  const ui = SpreadsheetApp.getUi();
+  const sheet = getMoneyForwardSheet_(ui);
+  const filter = sheet.getFilter();
+  if (filter) filter.remove();
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    ui.alert('「マネフォ用」シートにデータがありません。');
+    return;
+  }
+
+  const range = sheet.getRange(1, 1, lastRow, MF_CSV_HEADERS.length);
+  const values = range.getValues();
+  const header = values[0];
+  const rows = values
+    .slice(1)
+    .filter((row) => row.some((cell) => !isBlankCell_(cell)));
+
+  if (rows.length === 0) {
+    ui.alert('「マネフォ用」シートに出力対象の行がありません。');
+    return;
+  }
+
+  const csvContent = buildCsvContent_(header, rows);
+  const filename = buildMoneyForwardFilename_();
+  showDownloadDialog_(filename, csvContent);
 }
 
 function isAllowedReceiptMimeType_(mimeType) {
@@ -709,6 +763,12 @@ function normalizeAmount_(value) {
 function normalizeText_(value) {
   if (!value) return '';
   return String(value).replace(/\s+/g, ' ').trim();
+}
+
+function isBlankCell_(value) {
+  if (value === null || value === undefined) return true;
+  if (typeof value === 'string') return value.trim() === '';
+  return false;
 }
 
 function normalizeAccountTitle_(value) {
