@@ -528,13 +528,10 @@ function analyzeMoneyForward() {
 
   const sheet = getMoneyForwardSheet_(ui);
   resetMoneyForwardSheet_(sheet);
-  if (rows.length > 0) {
-    sheet.getRange(2, 1, rows.length, MF_CSV_HEADERS.length).setValues(rows);
-  }
-
   if (rows.length === 0) {
     ui.alert('対象ファイルがありませんでした。');
   } else {
+    sheet.getRange(2, 1, rows.length, MF_CSV_HEADERS.length).setValues(rows);
     ui.alert(`${rows.length} 件のレシートを「マネフォ用」シートに更新しました。`);
   }
 
@@ -575,19 +572,16 @@ function downloadMoneyForwardCsv() {
     return;
   }
 
-  const range = sheet.getRange(1, 1, lastRow, MF_CSV_HEADERS.length);
+  const range = sheet.getRange(2, 1, lastRow - 1, MF_CSV_HEADERS.length);
   const values = range.getValues();
-  const header = values[0];
-  const rows = values
-    .slice(1)
-    .filter((row) => row.some((cell) => !isBlankCell_(cell)));
+  const rows = values.filter((row) => row.some((cell) => !isBlankCell_(cell)));
 
   if (rows.length === 0) {
     ui.alert('「マネフォ用」シートに出力対象の行がありません。');
     return;
   }
 
-  const csvContent = buildCsvContent_(header, rows);
+  const csvContent = buildCsvContent_(MF_CSV_HEADERS, rows);
   const filename = buildMoneyForwardFilename_();
   showDownloadDialog_(filename, csvContent);
 }
