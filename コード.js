@@ -517,7 +517,7 @@ function analyzeMoneyForward() {
         partnerMap,
         merged.vendorName
       );
-      const row = buildMoneyForwardRow_(transactionNo, merged, partnerName, file.getId());
+      const row = buildMoneyForwardRow_(transactionNo, merged, partnerName, file.getUrl());
       rows.push(row);
       transactionNo++;
     } catch (e) {
@@ -832,8 +832,8 @@ function resolvePartnerName_(invoiceNumber, partnerMap, vendorName) {
   return '';
 }
 
-function buildMoneyForwardRow_(transactionNo, data, partnerName, fileId) {
-  const memoUrl = fileId ? buildDriveFileUrl_(fileId) : '';
+function buildMoneyForwardRow_(transactionNo, data, partnerName, fileUrl) {
+  const memoUrl = fileUrl || '';
   const amount = data.amount || 0;
   const creditAccount =
     data.paymentMethod === 'クレカ' ? '未払金' : '役員借入金';
@@ -869,10 +869,6 @@ function buildMoneyForwardRow_(transactionNo, data, partnerName, fileId) {
     '',
     ''
   ];
-}
-
-function buildDriveFileUrl_(fileId) {
-  return `https://drive.google.com/file/d/${fileId}/view`;
 }
 
 function buildMoneyForwardFilename_() {
