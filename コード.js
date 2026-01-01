@@ -6,6 +6,7 @@ const MODEL_NAME = 'gemini-2.5-flash-lite';
 
 const MF_TAX_CATEGORY = '課税仕入 10%';
 const MF_CARD_SUB_ACCOUNT = '三井住友ゴールドカード';
+const MF_PROCESSED_PREFIX = 'CSV済';
 const MF_CSV_HEADERS = [
   '取引No',
   '取引日',
@@ -59,14 +60,16 @@ const MF_ACCOUNT_CANDIDATE_GUIDE = MF_ACCOUNT_CANDIDATES
 // ==================================================
 function onOpen() {
   const ui = SpreadsheetApp.getUi();
+  const moneyForwardMenu = ui.createMenu('マネフォ関連')
+    .addItem('1. マネフォ用解析', 'analyzeMoneyForward')
+    .addItem('2. マネフォCSVダウンロード', 'downloadMoneyForwardCsv');
+
   ui.createMenu('🧾 レシート解析')
     .addItem('1. ドライブをスキャンして案を出す', 'scanToSheet')
     .addSeparator()
     .addItem('2. 記入された名前を反映する', 'applyRenames')
     .addSeparator()
-    .addItem('3. マネフォ用解析', 'analyzeMoneyForward')
-    .addSeparator()
-    .addItem('4. マネフォCSVダウンロード', 'downloadMoneyForwardCsv')
+    .addSubMenu(moneyForwardMenu)
     .addSeparator()
     .addItem('指定フォルダに移動', 'moveFilesToSpecifiedFolder')
     .addSeparator()
@@ -500,11 +503,13 @@ function analyzeMoneyForward() {
 
   while (files.hasNext()) {
     const file = files.next();
+    const fileName = file.getName();
     const mimeType = file.getMimeType();
     if (!isAllowedReceiptMimeType_(mimeType)) continue;
+    if (isCsvMarkedFile_(fileName)) continue;
 
     try {
-      const nameInfo = parseReceiptFilename_(file.getName());
+      const nameInfo = parseReceiptFilename_(fileName);
       const analysis = analyzeReceiptForMoneyForward_(file, mimeType, settings.apiKey);
       if (!analysis) {
         errors.push(`${file.getName()}: 解析失敗`);
@@ -584,6 +589,11 @@ function downloadMoneyForwardCsv() {
   const csvContent = buildCsvContent_(MF_CSV_HEADERS, rows);
   const filename = buildMoneyForwardFilename_();
   showDownloadDialog_(filename, csvContent);
+
+  const markedCount = markCsvProcessedFiles_(rows);
+  if (markedCount > 0) {
+    ui.alert(`${markedCount} 件のファイルに「CSV済」を付与しました。`);
+  }
 }
 
 function isAllowedReceiptMimeType_(mimeType) {
@@ -763,6 +773,40 @@ function isBlankCell_(value) {
   if (value === null || value === undefined) return true;
   if (typeof value === 'string') return value.trim() === '';
   return false;
+}
+
+function isCsvMarkedFile_(fileName) {
+  if (!fileName) return false;
+  return String(fileName).startsWith(MF_PROCESSED_PREFIX);
+}
+
+function markCsvProcessedFiles_(rows) {
+  const memoIndex = MF_CSV_HEADERS.indexOf('仕訳メモ');
+  if (memoIndex === -1) return 0;
+
+  let marked = 0;
+  for (const row of rows) {
+    const memo = row[memoIndex];
+    const fileId = extractDriveFileIdFromUrl_(memo);
+    if (!fileId) continue;
+    try {
+      const file = DriveApp.getFileById(fileId);
+      const name = file.getName();
+      if (isCsvMarkedFile_(name)) continue;
+      file.setName(`${MF_PROCESSED_PREFIX}${name}`);
+      marked++;
+    } catch (e) {
+      console.error(e);
+    }
+  }
+  return marked;
+}
+
+function extractDriveFileIdFromUrl_(url) {
+  if (!url) return '';
+  const text = String(url);
+  const match = text.match(/\/d\/([^/]+)\//);
+  return match ? match[1] : '';
 }
 
 function normalizeAccountTitle_(value) {
