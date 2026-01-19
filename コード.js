@@ -872,13 +872,19 @@ function normalizePaymentMethod_(value) {
     lowerCompact.includes('quicpay') ||
     lowerCompact.includes('quickpay') ||
     lowerCompact.includes('quiqpay') ||
+    lowerCompact.includes('qpay') ||
     compact.includes('クイックペイ');
   if (
     isId ||
     isQuicPay ||
     text.includes('クレカ') ||
     text.includes('クレジット') ||
-    text.includes('カード')
+    text.includes('カード') ||
+    lower.includes('visa') ||
+    lower.includes('master') ||
+    lower.includes('jcb') ||
+    lower.includes('amex') ||
+    lower.includes('diners')
   ) {
     return 'クレカ';
   }
@@ -896,9 +902,29 @@ function normalizePaymentMethod_(value) {
   if (
     text.includes('電子') ||
     text.includes('交通系') ||
+    text.includes('楽天Edy') ||
+    text.includes('WAON') ||
+    text.includes('nanaco') ||
+    text.includes('はやかけん') ||
+    text.includes('SUGOCA') ||
+    text.includes('nimoca') ||
+    text.includes('manaca') ||
+    text.includes('TOICA') ||
+    text.includes('ICOCA') ||
+    text.includes('PASMO') ||
+    text.includes('Suica') ||
     text.includes('IC') ||
     lower.includes('suica') ||
-    lower.includes('pasmo')
+    lower.includes('pasmo') ||
+    lower.includes('icoca') ||
+    lower.includes('toica') ||
+    lower.includes('manaca') ||
+    lower.includes('hayakaken') ||
+    lower.includes('nimoca') ||
+    lower.includes('sugoca') ||
+    lower.includes('edy') ||
+    lower.includes('waon') ||
+    lower.includes('nanaco')
   ) {
     return '電子マネー';
   }
@@ -1160,27 +1186,52 @@ function callGeminiApi(base64Data, mimeType, apiKey) {
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
 
   const prompt = `
-    このファイル（画像またはPDF）はレシート、領収書、または請求書です。
-    次の情報を抽出してJSONのみで返してください（前後の説明やマークダウンは不要）。
+    このファイル（画像またはPDF）はレシート／領収書／請求書です。
+    内容から必要情報を抽出し、JSONオブジェクト1個だけを返してください。
+    返答はJSONのみ（前後の説明、改行以外の文字、コードフェンス、Markdown、箇条書き、コメントは禁止）。
+    余計なキーは追加しない。
+    文字列は必ずダブルクォート、数値は数値型（"123"ではなく123）。
+    不明な項目は空文字 "" または 0 を入れる（null/undefinedは使わない）。
 
-    出力形式:
-    {
-      "paymentDate": "YYYY/MM/DD",
-      "paymentMethod": "現金|クレカ|PayPay|電子マネー|銀行振込",
-      "vendorName": "取引先名",
-      "invoiceNumber": "T1234567890123",
-      "summary": "品目（概要）",
-      "amount": 12345
-    }
+    出力スキーマ（キー順固定）:
+    {"paymentDate":"YYYY/MM/DD","paymentMethod":"現金|クレカ|PayPay|電子マネー|銀行振込","vendorName":"取引先名","invoiceNumber":"T1234567890123","summary":"品目（概要）","amount":12345}
 
-    ルール:
-    - paymentDate は支払日。西暦が不明な場合は現在に近い年を推測してください。
-    - paymentMethod は「現金」「クレカ」「PayPay」「電子マネー」「銀行振込」から選択。
-      - iD/QUICPay は「クレカ」として判定。
-      - 不明な場合は空文字。
-    - invoiceNumber は「T」から始まる13桁の数字（登録番号）を抽出。無い場合は空文字。
-    - amount は税込合計の整数。判読不能な場合は空文字。
-    - summary は「店名」または「購入した主な商品・サービス」を短く抽出。
+    抽出ルール:
+    1) paymentDate（支払日）
+    - レシート/領収書: 「日付」「取引日」「発行日」「購入日」などの最も妥当な日付。
+    - 請求書: 支払日が明確ならそれ、無ければ発行日。支払期限/入金期限は使わない。
+    - 西暦が無い場合は現在に近い年を推定。整形できなければ ""。
+
+    2) paymentMethod（支払方法）
+    - 候補は必ずこの5つから1つだけ: 「現金」「クレカ」「PayPay」「電子マネー」「銀行振込」
+    - iD/QUICPay/クレジット/カード/Visa/Master/JCB/Amex/Diners は「クレカ」
+    - Suica/PASMO/ICOCA/TOICA/manaca/はやかけん/nimoca/SUGOCA/楽天Edy/WAON/nanaco/交通系IC は「電子マネー」
+    - 「PayPay」表記があれば「PayPay」
+    - 「振込」「銀行」「口座」「振込先」等があり、支払方法が振込と読める場合は「銀行振込」
+    - 判別できない場合は ""（推測で埋めない）
+
+    3) vendorName（取引先名）
+    - 店名/会社名/発行者名/請求元名から最も適切な名称を短く抽出（住所や電話番号は含めない）
+    - 不明なら ""
+
+    4) invoiceNumber（登録番号）
+    - 正規表現: T[0-9]{13} に一致するもののみ。無ければ ""
+    - 似た番号（伝票番号等）は入れない
+
+    5) summary（概要）
+    - 15文字程度までを目安に短く
+    - レシート: 主な購入内容または用途カテゴリを優先
+    - 請求書: 請求内容の要約を優先
+    - vendorName と同じ文字列だけになるのは避ける（内容が取れない場合は vendorName で可）
+    - 不明なら ""
+
+    6) amount（税込合計）
+    - 支払総額（税込）の整数。小数は四捨五入せず小数点以下を無視
+    - 「合計」「総計」「お支払金額」「ご請求金額」等を優先
+    - 不明なら 0
+
+    出力例（JSONのみ）:
+    {"paymentDate":"2026/01/18","paymentMethod":"クレカ","vendorName":"ENEOS","invoiceNumber":"T1234567890123","summary":"ガソリン代","amount":4500}
   `;
 
   const payload = {
@@ -1227,6 +1278,6 @@ function normalizeReceiptExtraction_(data) {
     vendorName: normalizeText_(data.vendorName),
     invoiceNumber: normalizeInvoiceNumber_(data.invoiceNumber),
     summary: normalizeText_(data.summary),
-    amount: hasAmount ? normalizeAmount_(amountRaw) : ''
+    amount: hasAmount ? normalizeAmount_(amountRaw) : 0
   };
 }

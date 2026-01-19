@@ -115,7 +115,7 @@ AIの概要を置換するためのルール。
 
 ## Gemini 解析仕様
 ### レシート抽出プロンプト出力（`callGeminiApi`）
-JSON形式で以下を出力:
+JSON形式で以下を出力（JSONのみ・キー順固定）:
 ```
 {
   "paymentDate": "YYYY/MM/DD",
@@ -126,10 +126,10 @@ JSON形式で以下を出力:
   "amount": 12345
 }
 ```
-- paymentDate は支払日
+- paymentDate は支払日（請求書は支払日が不明なら発行日）
 - paymentMethod は上記の候補から選択（iD/QUICPay はクレカ扱い）
 - invoiceNumber は `T` + 13桁（無い場合は空文字）
-- amount は税込合計の整数（判読不能な場合は空）
+- amount は税込合計の整数（不明なら 0）
 
 ### マネフォ用プロンプト出力（`callGeminiApiForMoneyForward_`）
 JSON形式で以下を出力:
