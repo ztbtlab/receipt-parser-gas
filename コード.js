@@ -2,7 +2,8 @@
 // 設定エリア
 // ==================================================
 // モデル名を変更しやすいように定数化
-const MODEL_NAME = 'gemini-2.5-flash-lite'; 
+const DEFAULT_MODEL_NAME = 'gemini-2.5-flash-lite';
+const MODEL_CANDIDATES = ['gemini-2.5-flash-lite', 'gemini-3-flash'];
 
 const MF_TAX_CATEGORY = '課税仕入 10%';
 const MF_CARD_SUB_ACCOUNT = '三井住友ゴールドカード';
@@ -52,6 +53,19 @@ const MF_ACCOUNT_CANDIDATE_NAMES = MF_ACCOUNT_CANDIDATES.map((item) => item.name
 const MF_ACCOUNT_CANDIDATE_GUIDE = MF_ACCOUNT_CANDIDATES
   .map((item) => `${item.name}：${item.example}`)
   .join('\n');
+const RESULT_SHEET_HEADERS = [
+  'ファイルID',
+  'リンク',
+  '元ファイル名',
+  '変更案（修正可）',
+  '移動先',
+  'ステータス',
+  '支払日',
+  '取引先',
+  'インボイス番号',
+  '品目（概要）',
+  '金額'
+];
 
 // ※APIキーは「スクリプトプロパティ」から、フォルダIDは「設定」シートから読み込みます
 
@@ -74,26 +88,35 @@ function onOpen() {
     .addItem('指定フォルダに移動', 'moveFilesToSpecifiedFolder')
     .addSeparator()
     .addItem('⚙️ APIキー設定', 'setApiKey')
+    .addItem('⚙️ モデル切替', 'setModelName')
     .addToUi();
 }
 
 // ==================================================
 // 解析結果シートの列構成を整える
-// A:ファイルID, B:リンク, C:元ファイル名, D:変更案, E:移動先, F:ステータス
+// A:ファイルID, B:リンク, C:元ファイル名, D:変更案, E:移動先, F:ステータス,
+// G:支払日, H:取引先, I:インボイス番号, J:品目（概要）, K:金額
 // ==================================================
 function ensureResultSheetLayout_(sheet) {
   if (sheet.getLastRow() === 0) {
-    sheet.appendRow(['ファイルID', 'リンク', '元ファイル名', '変更案（修正可）', '移動先', 'ステータス']);
+    sheet.appendRow(RESULT_SHEET_HEADERS);
     sheet.setRowHeight(1, 30);
     sheet.setColumnWidth(2, 60);
     sheet.setColumnWidth(4, 300);
     sheet.setColumnWidth(5, 180);
     sheet.setColumnWidth(6, 120);
+    sheet.setColumnWidth(7, 110);
+    sheet.setColumnWidth(8, 220);
+    sheet.setColumnWidth(9, 190);
+    sheet.setColumnWidth(10, 240);
+    sheet.setColumnWidth(11, 100);
     sheet.setFrozenRows(1);
     return;
   }
 
-  const headerRow = sheet.getRange(1, 1, 1, Math.max(6, sheet.getLastColumn())).getValues()[0];
+  const headerRow = sheet
+    .getRange(1, 1, 1, Math.max(RESULT_SHEET_HEADERS.length, sheet.getLastColumn()))
+    .getValues()[0];
   const destinationCol = headerRow.indexOf('移動先') + 1;
 
   // 旧フォーマット（E列=ステータス）からの移行: D列の後ろに「移動先」を挿入
@@ -103,11 +126,34 @@ function ensureResultSheetLayout_(sheet) {
   }
 
   // 「ステータス」が無い場合は末尾に追加（通常は移動先追加でFに移動済み）
-  const headerRowAfter = sheet.getRange(1, 1, 1, Math.max(6, sheet.getLastColumn())).getValues()[0];
+  const headerRowAfter = sheet
+    .getRange(1, 1, 1, Math.max(RESULT_SHEET_HEADERS.length, sheet.getLastColumn()))
+    .getValues()[0];
   const statusColAfter = headerRowAfter.indexOf('ステータス') + 1;
   if (statusColAfter === 0) {
     sheet.insertColumnAfter(5);
     sheet.getRange(1, 6).setValue('ステータス');
+  }
+
+  const headerRowFinal = sheet
+    .getRange(1, 1, 1, Math.max(RESULT_SHEET_HEADERS.length, sheet.getLastColumn()))
+    .getValues()[0];
+  const statusColFinal = headerRowFinal.indexOf('ステータス') + 1;
+  if (statusColFinal > 0) {
+    const extractHeaders = ['支払日', '取引先', 'インボイス番号', '品目（概要）', '金額'];
+    let insertAfter = statusColFinal;
+    for (const header of extractHeaders) {
+      const currentHeaderRow = sheet
+        .getRange(1, 1, 1, Math.max(RESULT_SHEET_HEADERS.length, sheet.getLastColumn()))
+        .getValues()[0];
+      if (currentHeaderRow.indexOf(header) === -1) {
+        sheet.insertColumnAfter(insertAfter);
+        sheet.getRange(1, insertAfter + 1).setValue(header);
+        insertAfter += 1;
+      } else {
+        insertAfter = currentHeaderRow.indexOf(header) + 1;
+      }
+    }
   }
 
   sheet.setRowHeight(1, 30);
@@ -115,6 +161,11 @@ function ensureResultSheetLayout_(sheet) {
   sheet.setColumnWidth(4, 300);
   sheet.setColumnWidth(5, 180);
   sheet.setColumnWidth(6, 120);
+  sheet.setColumnWidth(7, 110);
+  sheet.setColumnWidth(8, 220);
+  sheet.setColumnWidth(9, 190);
+  sheet.setColumnWidth(10, 240);
+  sheet.setColumnWidth(11, 100);
   sheet.setFrozenRows(1);
 }
 
@@ -139,6 +190,37 @@ function setApiKey() {
       ui.alert('キーが空のため保存しませんでした。');
     }
   }
+}
+
+// ==================================================
+// Geminiモデルをスクリプトプロパティに保存する関数
+// ==================================================
+function setModelName() {
+  const ui = SpreadsheetApp.getUi();
+  const currentModel = getModelName_();
+  const result = ui.prompt(
+    'Geminiモデル切替',
+    `使用するモデルを入力してください（現在: ${currentModel}）\n` +
+      `候補: ${MODEL_CANDIDATES.join(', ')}`,
+    ui.ButtonSet.OK_CANCEL
+  );
+
+  if (result.getSelectedButton() !== ui.Button.OK) return;
+
+  const model = result.getResponseText().trim();
+  if (!MODEL_CANDIDATES.includes(model)) {
+    ui.alert(`無効なモデル名です。\n候補: ${MODEL_CANDIDATES.join(', ')}`);
+    return;
+  }
+
+  PropertiesService.getScriptProperties().setProperty('GEMINI_MODEL_NAME', model);
+  ui.alert(`モデルを「${model}」に切り替えました。`);
+}
+
+function getModelName_() {
+  const stored = PropertiesService.getScriptProperties().getProperty('GEMINI_MODEL_NAME');
+  if (MODEL_CANDIDATES.includes(stored)) return stored;
+  return DEFAULT_MODEL_NAME;
 }
 
 // ==================================================
@@ -218,6 +300,22 @@ function getReplacementRules() {
 }
 
 // ==================================================
+// 概要に対して置換ロジックを適用する関数
+// ==================================================
+function applyReplacementToSummary_(summaryText, rules) {
+  if (!summaryText || !rules || rules.length === 0) return summaryText;
+
+  for (const rule of rules) {
+    const keyword = rule[0];
+    const replacement = rule[1];
+    if (keyword && String(summaryText).includes(keyword)) {
+      return replacement;
+    }
+  }
+  return summaryText;
+}
+
+// ==================================================
 // 置換ロジックを適用する関数（インボイス番号対応版）
 // ==================================================
 function applyReplacement(nameText, rules) {
@@ -226,11 +324,15 @@ function applyReplacement(nameText, rules) {
   // 全角の「｜」で分割
   const parts = nameText.split('｜');
   
-  // フォーマットが「支払方法｜日付｜インボイス｜概要」の4要素でない場合は何もしない
+  // フォーマットが「支払方法｜日付｜インボイス｜概要」または
+  // 「支払方法｜日付｜インボイス｜金額｜概要」でない場合は何もしない
   if (parts.length < 4) return nameText;
   
-  // [0]:支払方法, [1]:日付, [2]:インボイス番号, [3]:概要
-  let summary = parts[3]; // 概要部分
+  const amountText = normalizeText_(parts[3]);
+  const hasAmountField = parts.length >= 5 && /^\d[\d,]*$/.test(amountText);
+  const summaryIndex = hasAmountField ? 4 : 3;
+  const summaryParts = parts.slice(summaryIndex);
+  let summary = summaryParts.join('｜');
   
   // ルール表を上から順に走査
   for (const rule of rules) {
@@ -246,7 +348,7 @@ function applyReplacement(nameText, rules) {
   }
   
   // 再結合して返す
-  return `${parts[0]}｜${parts[1]}｜${parts[2]}｜${summary}`;
+  return `${parts.slice(0, summaryIndex).join('｜')}｜${summary}`;
 }
 
 // ==================================================
@@ -310,34 +412,51 @@ function scanToSheet() {
       const thumbnailFormula = `=HYPERLINK("https://drive.google.com/file/d/${id}/view", "開く")`;
 
       // Gemini API呼び出し
-      let aiSuggestedName = callGeminiApi(base64Data, mimeType, settings.apiKey);
-      
+      const analysis = callGeminiApi(base64Data, mimeType, settings.apiKey);
+
       let newNameCandidate = "";
       let status = "解析失敗";
+      let paymentDate = "";
+      let vendorName = "";
+      let invoiceNumber = "";
+      let summary = "";
+      let amount = "";
 
-      if (aiSuggestedName) {
-        // AIの結果に対して置換ルールを適用
-        aiSuggestedName = applyReplacement(aiSuggestedName, replacementRules);
-
-        const extension = fileName.substring(fileName.lastIndexOf('.'));
-        newNameCandidate = aiSuggestedName + extension;
+      if (analysis) {
+        paymentDate = analysis.paymentDate || "";
+        vendorName = analysis.vendorName || "";
+        invoiceNumber = analysis.invoiceNumber || "";
+        summary = applyReplacementToSummary_(analysis.summary || "", replacementRules);
+        amount = analysis.amount !== '' ? analysis.amount : "";
         status = "未処理";
       }
 
-      sheet.appendRow([id, thumbnailFormula, fileName, newNameCandidate, "", status]);
+      sheet.appendRow([
+        id,
+        thumbnailFormula,
+        fileName,
+        newNameCandidate,
+        "",
+        status,
+        paymentDate,
+        vendorName,
+        invoiceNumber,
+        summary,
+        amount
+      ]);
       sheet.setRowHeight(sheet.getLastRow(), 30);
       processCount++;
 
     } catch (e) {
       console.error(e);
-      sheet.appendRow([id, "", fileName, "エラー発生", "", e.toString()]);
+      sheet.appendRow([id, "", fileName, "", "", "エラー: " + e.toString(), "", "", "", "", ""]);
     }
   }
 
   if (processCount === 0) {
     ui.alert('新しいファイルは見つかりませんでした。');
   } else {
-    ui.alert(`${processCount} 件のファイルをスキャンしました。\n「変更案」列を確認・修正してから、メニューの「2. 反映する」を実行してください。`);
+    ui.alert(`${processCount} 件のファイルをスキャンしました。\n抽出結果を確認し、必要に応じて「変更案」列を入力してから、メニューの「2. 反映する」を実行してください。`);
   }
 }
 
@@ -619,7 +738,10 @@ function parseReceiptFilename_(fileName) {
       ? normalizeDate_(rawDate)
       : '';
   const invoiceNumber = normalizeInvoiceNumber_(parts[2]);
-  const summary = normalizeText_(parts.slice(3).join('｜'));
+  const amountText = normalizeText_(parts[3]);
+  const hasAmountField = parts.length >= 5 && /^\d[\d,]*$/.test(amountText);
+  const summaryStartIndex = hasAmountField ? 4 : 3;
+  const summary = normalizeText_(parts.slice(summaryStartIndex).join('｜'));
 
   return {
     paymentMethod: paymentMethod,
@@ -636,7 +758,8 @@ function analyzeReceiptForMoneyForward_(file, mimeType, apiKey) {
 }
 
 function callGeminiApiForMoneyForward_(base64Data, mimeType, apiKey) {
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`;
+  const modelName = getModelName_();
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
   const prompt = buildMoneyForwardPrompt_();
 
   const payload = {
@@ -979,28 +1102,27 @@ function showDownloadDialog_(filename, csvContent) {
 // Gemini API 呼び出し関数（インボイス・iD・PDF・HEIC対応）
 // ==================================================
 function callGeminiApi(base64Data, mimeType, apiKey) {
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL_NAME}:generateContent?key=${apiKey}`;
+  const modelName = getModelName_();
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
 
   const prompt = `
     このファイル（画像またはPDF）はレシート、または領収書です。
-    内容を解析して、ファイル名として使うための文字列を作成してください。
+    次の情報を抽出してJSONのみで返してください（前後の説明やマークダウンは不要）。
 
-    【出力ルール】
-    1. フォーマットは「支払方法｜YYYYMMDD｜インボイス番号｜概要」としてください。
-       ※区切り文字は全角の縦線「｜」を使用してください。
-    2. 日付（YYYYMMDD）はレシートの日付を使用してください。西暦が不明な場合は現在に近い年を推測してください。
-    3. 「インボイス番号」は「T」から始まる13桁の数字（登録番号）を抽出してください。
-       ※見つからない、または判読できない場合は「T0000000000000」としてください。
-    4. 支払方法は「現金」「クレカ」「電子マネー」のいずれかに分類してください。
-       ※特に「iD」での支払いは「クレカ」として判定してください。
-       ※不明な場合は「現金」としてください。
-    5. 「概要」は、レシートの内容から「店名」または「購入した主な商品・サービス（例：ガソリン代、食料品、書籍代）」を短く抽出してください。
-    6. 余計な説明やマークダウン記号は一切不要です。ファイル名の文字列のみを返してください。
-    
-    【例】
-    クレカ｜20231126｜T1234567890123｜スーパーの店名
-    現金｜20240105｜T0000000000000｜タクシー代
-    電子マネー｜20250815｜T9876543210987｜ガソリン代
+    出力形式:
+    {
+      "paymentDate": "YYYY/MM/DD",
+      "vendorName": "取引先名",
+      "invoiceNumber": "T1234567890123",
+      "summary": "品目（概要）",
+      "amount": 12345
+    }
+
+    ルール:
+    - paymentDate は支払日。西暦が不明な場合は現在に近い年を推測してください。
+    - invoiceNumber は「T」から始まる13桁の数字（登録番号）を抽出してください。無い場合は空文字。
+    - amount は税込合計の整数。判読不能な場合は空文字。
+    - summary は「店名」または「購入した主な商品・サービス」を短く抽出。
   `;
 
   const payload = {
@@ -1028,10 +1150,24 @@ function callGeminiApi(base64Data, mimeType, apiKey) {
   }
 
   if (json.candidates && json.candidates[0].content && json.candidates[0].content.parts) {
-    let text = json.candidates[0].content.parts[0].text;
-    text = text.trim().replace(/\n/g, '').replace(/`/g, '');
-    return text;
+    const text = json.candidates[0].content.parts[0].text;
+    const parsed = extractJsonFromText_(text);
+    return normalizeReceiptExtraction_(parsed);
   }
-  
+
   return null;
+}
+
+function normalizeReceiptExtraction_(data) {
+  if (!data) return null;
+  const amountRaw = data.amount;
+  const hasAmount =
+    amountRaw !== undefined && amountRaw !== null && String(amountRaw).trim() !== '';
+  return {
+    paymentDate: normalizeDate_(data.paymentDate || data.date),
+    vendorName: normalizeText_(data.vendorName),
+    invoiceNumber: normalizeInvoiceNumber_(data.invoiceNumber),
+    summary: normalizeText_(data.summary),
+    amount: hasAmount ? normalizeAmount_(amountRaw) : ''
+  };
 }
