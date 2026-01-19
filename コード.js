@@ -61,6 +61,7 @@ const RESULT_SHEET_HEADERS = [
   '移動先',
   'ステータス',
   '支払日',
+  '支払い方法',
   '取引先',
   'インボイス番号',
   '品目（概要）',
@@ -95,7 +96,7 @@ function onOpen() {
 // ==================================================
 // 解析結果シートの列構成を整える
 // A:ファイルID, B:リンク, C:元ファイル名, D:変更案, E:移動先, F:ステータス,
-// G:支払日, H:取引先, I:インボイス番号, J:品目（概要）, K:金額
+// G:支払日, H:支払い方法, I:取引先, J:インボイス番号, K:品目（概要）, L:金額
 // ==================================================
 function ensureResultSheetLayout_(sheet) {
   if (sheet.getLastRow() === 0) {
@@ -106,10 +107,11 @@ function ensureResultSheetLayout_(sheet) {
     sheet.setColumnWidth(5, 180);
     sheet.setColumnWidth(6, 120);
     sheet.setColumnWidth(7, 110);
-    sheet.setColumnWidth(8, 220);
-    sheet.setColumnWidth(9, 190);
-    sheet.setColumnWidth(10, 240);
-    sheet.setColumnWidth(11, 100);
+    sheet.setColumnWidth(8, 110);
+    sheet.setColumnWidth(9, 220);
+    sheet.setColumnWidth(10, 190);
+    sheet.setColumnWidth(11, 240);
+    sheet.setColumnWidth(12, 100);
     sheet.setFrozenRows(1);
     return;
   }
@@ -140,7 +142,14 @@ function ensureResultSheetLayout_(sheet) {
     .getValues()[0];
   const statusColFinal = headerRowFinal.indexOf('ステータス') + 1;
   if (statusColFinal > 0) {
-    const extractHeaders = ['支払日', '取引先', 'インボイス番号', '品目（概要）', '金額'];
+    const extractHeaders = [
+      '支払日',
+      '支払い方法',
+      '取引先',
+      'インボイス番号',
+      '品目（概要）',
+      '金額'
+    ];
     let insertAfter = statusColFinal;
     for (const header of extractHeaders) {
       const currentHeaderRow = sheet
@@ -162,10 +171,11 @@ function ensureResultSheetLayout_(sheet) {
   sheet.setColumnWidth(5, 180);
   sheet.setColumnWidth(6, 120);
   sheet.setColumnWidth(7, 110);
-  sheet.setColumnWidth(8, 220);
-  sheet.setColumnWidth(9, 190);
-  sheet.setColumnWidth(10, 240);
-  sheet.setColumnWidth(11, 100);
+  sheet.setColumnWidth(8, 110);
+  sheet.setColumnWidth(9, 220);
+  sheet.setColumnWidth(10, 190);
+  sheet.setColumnWidth(11, 240);
+  sheet.setColumnWidth(12, 100);
   sheet.setFrozenRows(1);
 }
 
@@ -417,6 +427,7 @@ function scanToSheet() {
       let newNameCandidate = "";
       let status = "解析失敗";
       let paymentDate = "";
+      let paymentMethod = "";
       let vendorName = "";
       let invoiceNumber = "";
       let summary = "";
@@ -424,6 +435,7 @@ function scanToSheet() {
 
       if (analysis) {
         paymentDate = analysis.paymentDate || "";
+        paymentMethod = analysis.paymentMethod || "";
         vendorName = analysis.vendorName || "";
         invoiceNumber = analysis.invoiceNumber || "";
         summary = applyReplacementToSummary_(analysis.summary || "", replacementRules);
@@ -439,6 +451,7 @@ function scanToSheet() {
         "",
         status,
         paymentDate,
+        paymentMethod,
         vendorName,
         invoiceNumber,
         summary,
@@ -449,7 +462,7 @@ function scanToSheet() {
 
     } catch (e) {
       console.error(e);
-      sheet.appendRow([id, "", fileName, "", "", "エラー: " + e.toString(), "", "", "", "", ""]);
+      sheet.appendRow([id, "", fileName, "", "", "エラー: " + e.toString(), "", "", "", "", "", ""]);
     }
   }
 
@@ -847,8 +860,49 @@ function normalizeReceiptData_(data) {
 function normalizePaymentMethod_(value) {
   const text = normalizeText_(value);
   if (!text) return '';
-  if (text.includes('クレカ') || text.includes('クレジット') || text.includes('カード')) return 'クレカ';
-  if (text.includes('電子') || text.includes('交通系') || text.includes('IC')) return '電子マネー';
+
+  const compact = text.replace(/\s+/g, '');
+  const lower = text.toLowerCase();
+  const lowerCompact = lower.replace(/\s+/g, '');
+
+  if (lowerCompact.includes('paypay') || compact.includes('ペイペイ')) return 'PayPay';
+
+  const isId = /(^|\W)i\s*d(\W|$)/i.test(text) || compact.includes('ｉｄ');
+  const isQuicPay =
+    lowerCompact.includes('quicpay') ||
+    lowerCompact.includes('quickpay') ||
+    lowerCompact.includes('quiqpay') ||
+    compact.includes('クイックペイ');
+  if (
+    isId ||
+    isQuicPay ||
+    text.includes('クレカ') ||
+    text.includes('クレジット') ||
+    text.includes('カード')
+  ) {
+    return 'クレカ';
+  }
+
+  if (
+    compact.includes('銀行振込') ||
+    compact.includes('振込') ||
+    compact.includes('振り込み') ||
+    compact.includes('振替') ||
+    lower.includes('bank transfer')
+  ) {
+    return '銀行振込';
+  }
+
+  if (
+    text.includes('電子') ||
+    text.includes('交通系') ||
+    text.includes('IC') ||
+    lower.includes('suica') ||
+    lower.includes('pasmo')
+  ) {
+    return '電子マネー';
+  }
+
   if (text.includes('現金')) return '現金';
   return '';
 }
@@ -1106,12 +1160,13 @@ function callGeminiApi(base64Data, mimeType, apiKey) {
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
 
   const prompt = `
-    このファイル（画像またはPDF）はレシート、または領収書です。
+    このファイル（画像またはPDF）はレシート、領収書、または請求書です。
     次の情報を抽出してJSONのみで返してください（前後の説明やマークダウンは不要）。
 
     出力形式:
     {
       "paymentDate": "YYYY/MM/DD",
+      "paymentMethod": "現金|クレカ|PayPay|電子マネー|銀行振込",
       "vendorName": "取引先名",
       "invoiceNumber": "T1234567890123",
       "summary": "品目（概要）",
@@ -1120,7 +1175,10 @@ function callGeminiApi(base64Data, mimeType, apiKey) {
 
     ルール:
     - paymentDate は支払日。西暦が不明な場合は現在に近い年を推測してください。
-    - invoiceNumber は「T」から始まる13桁の数字（登録番号）を抽出してください。無い場合は空文字。
+    - paymentMethod は「現金」「クレカ」「PayPay」「電子マネー」「銀行振込」から選択。
+      - iD/QUICPay は「クレカ」として判定。
+      - 不明な場合は空文字。
+    - invoiceNumber は「T」から始まる13桁の数字（登録番号）を抽出。無い場合は空文字。
     - amount は税込合計の整数。判読不能な場合は空文字。
     - summary は「店名」または「購入した主な商品・サービス」を短く抽出。
   `;
@@ -1165,6 +1223,7 @@ function normalizeReceiptExtraction_(data) {
     amountRaw !== undefined && amountRaw !== null && String(amountRaw).trim() !== '';
   return {
     paymentDate: normalizeDate_(data.paymentDate || data.date),
+    paymentMethod: normalizePaymentMethod_(data.paymentMethod),
     vendorName: normalizeText_(data.vendorName),
     invoiceNumber: normalizeInvoiceNumber_(data.invoiceNumber),
     summary: normalizeText_(data.summary),
