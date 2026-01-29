@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>レシート解析ツール 使い方ガイド</title>
+  <style>
+    :root {
+      --bg: #f7f5f1;
+      --paper: #ffffff;
+      --text: #1f1f1f;
+      --muted: #5b5b5b;
+      --accent: #2f6f5e;
+      --border: #e6e3dc;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      line-height: 1.7;
+    }
+    header {
+      padding: 40px 24px 16px;
+      background: linear-gradient(135deg, #efe8dd, #f7f5f1);
+      border-bottom: 1px solid var(--border);
+    }
+    .container {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 28px;
+      letter-spacing: 0.02em;
+    }
+    .subtitle {
+      color: var(--muted);
+      margin: 0;
+    }
+    nav {
+      margin: 16px 0 0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 16px;
+      font-size: 14px;
+    }
+    nav a {
+      color: var(--accent);
+      text-decoration: none;
+      border-bottom: 1px solid transparent;
+    }
+    nav a:hover { border-bottom-color: var(--accent); }
+    section {
+      background: var(--paper);
+      padding: 24px;
+      margin: 18px 0;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: 0 1px 0 rgba(0,0,0,0.02);
+    }
+    h2 { margin-top: 0; font-size: 20px; }
+    h3 { margin-bottom: 8px; font-size: 16px; color: #222; }
+    ul { margin: 8px 0 8px 18px; }
+    ol { margin: 8px 0 8px 18px; }
+    .note {
+      background: #f1f6f4;
+      border-left: 4px solid var(--accent);
+      padding: 10px 12px;
+      color: #2f3f3a;
+      border-radius: 6px;
+      margin: 12px 0;
+      font-size: 14px;
+    }
+    figure {
+      margin: 16px 0;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      background: #fafafa;
+    }
+    figure img {
+      width: 100%;
+      height: auto;
+      display: block;
+      border-radius: 8px;
+    }
+    figcaption {
+      margin-top: 8px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+    @media (min-width: 860px) {
+      .grid.two { grid-template-columns: 1fr 1fr; }
+    }
+    footer {
+      padding: 24px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    code { background: #f3f2ef; padding: 2px 4px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="container">
+      <h1>レシート解析ツール 使い方ガイド</h1>
+      <p class="subtitle">最終更新日: 2026/01/29</p>
+      <nav>
+        <a href="#prep">事前準備</a>
+        <a href="#setup">初期設定</a>
+        <a href="#flow">操作手順</a>
+        <a href="#tips">補足</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <section id="prep">
+      <h2>1. 事前準備</h2>
+      <h3>1-1. Gemini APIキーの取得</h3>
+      <ol>
+        <li>次のURLにアクセス: <a href="https://aistudio.google.com/api-keys" target="_blank" rel="noopener">https://aistudio.google.com/api-keys</a></li>
+        <li>右上の「APIキーを作成」をクリック</li>
+        <li>キー名をわかりやすく入力（プロジェクトはそのままでもOK）</li>
+        <li>作成したキーが一覧に表示されるのでクリック</li>
+        <li>APIキーをコピー</li>
+      </ol>
+      <div class="grid two">
+        <figure>
+          <img src="index_image/a.APIキーを作成.png" alt="APIキーを作成" />
+          <figcaption>図1: APIキーを作成</figcaption>
+        </figure>
+        <figure>
+          <img src="index_image/b.新しいキーを作成する.png" alt="新しいキーを作成" />
+          <figcaption>図2: 新しいキーを作成</figcaption>
+        </figure>
+        <figure>
+          <img src="index_image/c.作成したキー.png" alt="作成したキー" />
+          <figcaption>図3: 作成したキー</figcaption>
+        </figure>
+        <figure>
+          <img src="index_image/d.APIキーをコピー.png" alt="APIキーをコピー" />
+          <figcaption>図4: APIキーをコピー</figcaption>
+        </figure>
+      </div>
+
+      <h3>1-2. APIキーの登録</h3>
+      <ol start="6">
+        <li>スプレッドシートのメニューから <strong>設定 &gt; APIキーの設定</strong> をクリック</li>
+        <li>先ほどコピーしたキーを入力して保存</li>
+      </ol>
+      <div class="grid two">
+        <figure>
+          <img src="index_image/e.APIキーの設定.png" alt="APIキーの設定" />
+          <figcaption>図5: APIキーの設定</figcaption>
+        </figure>
+        <figure>
+          <img src="index_image/f.APIキー設定画面.png" alt="APIキー設定画面" />
+          <figcaption>図6: APIキー設定画面</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section id="setup">
+      <h2>2. 初期設定（最初に1回）</h2>
+      <h3>2-1. 設定シート</h3>
+      <ul>
+        <li>対象フォルダURL（スキャン対象のDriveフォルダURL）</li>
+        <li>区切り文字（ファイル名生成時の区切り）</li>
+        <li>解析上限（1回の解析件数）</li>
+        <li>貸方勘定科目(クレカ) / 貸方勘定科目(それ以外)</li>
+        <li>貸方補助科目(クレカ)：<code>カード情報</code> / <code>空欄</code></li>
+      </ul>
+
+      <h3>2-2. ファイル名ルール</h3>
+      <ul>
+        <li>項目名ごとに「順番」「使用可否」を設定</li>
+        <li>ファイル名の構成を自由にカスタマイズ可能</li>
+      </ul>
+
+      <h3>2-3. 移動先リスト</h3>
+      <ul>
+        <li>キーワードと移動先フォルダURLを登録</li>
+        <li>解析シートの「移動先」列にキーワードを入れると移動できます</li>
+      </ul>
+      <figure>
+        <img src="index_image/h.移動先.png" alt="移動先リスト" />
+        <figcaption>図7: 移動先リスト</figcaption>
+      </figure>
+
+      <h3>2-4. 勘定科目ルール</h3>
+      <ul>
+        <li>仕訳ルールを記載（AIがルールに沿って判定）</li>
+      </ul>
+    </section>
+
+    <section id="flow">
+      <h2>3. 操作手順</h2>
+
+      <h3>3-1. レシート解析</h3>
+      <ol>
+        <li>メニューから <strong>1. レシート解析</strong> を実行</li>
+        <li>解析結果が「解析シート」に反映されます</li>
+        <li>抜けや誤りがあれば編集してください</li>
+        <li><strong>変更案を再生成（全行）</strong> を実行するとファイル名の変更案が更新されます</li>
+        <li><strong>画像プレビューを開く</strong> を押すと、選択した行の画像が右側に表示されます</li>
+      </ol>
+      <figure>
+        <img src="index_image/g.画像プレビュー.png" alt="画像プレビュー" />
+        <figcaption>図8: 画像プレビュー</figcaption>
+      </figure>
+      <div class="note">
+        <strong>補足</strong><br>
+        ・解析済みのファイルは再スキャン時にスキップされます。<br>
+        ・GASの制限（6分）対策として1回50件までの上限があります。<br>
+        ・50件ずつ繰り返せば全件解析できます。<br>
+        ・上限は設定シートで変更可能です。
+      </div>
+
+      <h3>3-2. ファイル名反映</h3>
+      <p>メニュー <strong>2. ファイル名反映</strong> を実行すると、変更案の名前でDrive上のファイルが更新されます。</p>
+
+      <h3>3-3. フォルダ移動</h3>
+      <ol>
+        <li>移動先リストにキーワードとフォルダURLを登録</li>
+        <li>解析シートの「移動先」列にキーワードを入力</li>
+        <li>メニュー <strong>3. フォルダ移動</strong> を実行</li>
+      </ol>
+      <p>※DriveのファイルIDは変わらないためリンクは壊れません。</p>
+
+      <h3>3-4. マネフォ用解析</h3>
+      <ol>
+        <li>勘定科目ルールを記載</li>
+        <li>設定シートで貸方勘定科目/補助科目を設定</li>
+        <li>メニュー <strong>4. マネフォ用解析</strong> を実行</li>
+        <li>マネフォ用シートにデータが反映されます</li>
+        <li>マネフォ用シートでも画像プレビューが有効です</li>
+      </ol>
+
+      <h3>3-5. マネフォCSVダウンロード</h3>
+      <p>メニュー <strong>5. マネフォCSVダウンロード</strong> を実行すると、マネーフォワードクラウド形式のCSVが出力されます。</p>
+    </section>
+
+    <section id="tips">
+      <h2>4. 補足</h2>
+      <h3>4-1. モデルの変更</h3>
+      <ul>
+        <li>デフォルトは <strong>gemini-2.5-flash-lite</strong></li>
+        <li>精度に課題がある場合は <strong>gemini-3-flash-preview</strong> が推奨</li>
+        <li>ただし料金体系が変わる可能性があります</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>
+    Receipt Parser GAS / GitHub Pages
+  </footer>
+</body>
+</html>
