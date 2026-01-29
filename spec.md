@@ -44,7 +44,6 @@
 - `4. マネフォ用解析` → `analyzeMoneyForward`
 - `5. マネフォCSVダウンロード` → `downloadMoneyForwardCsv`
 - `画像プレビューを開く` → `showImageSidebar`
-- `ヘルプを見る` → `showHelp`（GitHub Pages のヘルプを開く）
 - サブメニュー `⚙️ 設定`
   - `APIキーの設定` → `setApiKey`
   - `モデル切替（現在: <model>）` → `setModelName`
