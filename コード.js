@@ -2167,16 +2167,16 @@ function showImageSidebar() {
 function showHelp() {
   const htmlContent = `
     <html>
-      <body style="font-family: Arial, sans-serif; font-size: 13px;">
-        <p>ヘルプページを開きます。</p>
-        <p>
-          <a href="${HELP_URL}" target="_blank" rel="noopener">ヘルプを開く</a>
-        </p>
+      <body>
+        <script>
+          window.open(${JSON.stringify(HELP_URL)}, '_blank');
+          google.script.host.close();
+        </script>
       </body>
     </html>
   `;
   SpreadsheetApp.getUi().showModalDialog(
-    HtmlService.createHtmlOutput(htmlContent).setWidth(280).setHeight(140),
+    HtmlService.createHtmlOutput(htmlContent).setWidth(1).setHeight(1),
     'ヘルプ'
   );
 }
