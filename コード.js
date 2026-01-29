@@ -2165,12 +2165,14 @@ function showImageSidebar() {
 }
 
 function showHelp() {
-  const html = HtmlService.createHtmlOutput(buildHelpSidebarHtml_())
-    .setTitle('ヘルプ');
-  SpreadsheetApp.getUi().showSidebar(html);
+  const html = HtmlService.createHtmlOutput(buildHelpDialogHtml_())
+    .setTitle('ヘルプ')
+    .setWidth(1000)
+    .setHeight(900);
+  SpreadsheetApp.getUi().showModalDialog(html, 'ヘルプ');
 }
 
-function buildHelpSidebarHtml_() {
+function buildHelpDialogHtml_() {
   const helpUrl = HELP_URL;
   return `
 <!DOCTYPE html>
@@ -2178,8 +2180,10 @@ function buildHelpSidebarHtml_() {
   <head>
     <meta charset="utf-8">
     <style>
+      html,
       body {
         font-family: "Noto Sans JP", Arial, sans-serif;
+        height: 100%;
         margin: 0;
       }
       .header {
@@ -2197,7 +2201,7 @@ function buildHelpSidebarHtml_() {
         text-decoration: none;
       }
       .content {
-        height: calc(100vh - 64px);
+        height: calc(100% - 64px);
       }
       iframe {
         border: 0;
