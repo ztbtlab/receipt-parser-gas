@@ -2165,20 +2165,58 @@ function showImageSidebar() {
 }
 
 function showHelp() {
-  const htmlContent = `
-    <html>
-      <body style="font-family: Arial, sans-serif; font-size: 13px;">
-        <p>ヘルプページを開きます。</p>
-        <p>
-          <a href="${HELP_URL}" target="_blank" rel="noopener">ヘルプを開く</a>
-        </p>
-      </body>
-    </html>
+  const html = HtmlService.createHtmlOutput(buildHelpSidebarHtml_())
+    .setTitle('ヘルプ');
+  SpreadsheetApp.getUi().showSidebar(html);
+}
+
+function buildHelpSidebarHtml_() {
+  const helpUrl = HELP_URL;
+  return `
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      body {
+        font-family: "Noto Sans JP", Arial, sans-serif;
+        margin: 0;
+      }
+      .header {
+        background: #f8f9fa;
+        border-bottom: 1px solid #e0e0e0;
+        padding: 12px;
+      }
+      .title {
+        color: #555;
+        font-size: 12px;
+        margin-bottom: 6px;
+      }
+      .link {
+        font-size: 13px;
+        text-decoration: none;
+      }
+      .content {
+        height: calc(100vh - 64px);
+      }
+      iframe {
+        border: 0;
+        height: 100%;
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="header">
+      <div class="title">表示されない場合はこちらから開いてください。</div>
+      <a class="link" href="${helpUrl}" target="_blank" rel="noopener">ヘルプを別タブで開く</a>
+    </div>
+    <div class="content">
+      <iframe src="${helpUrl}" referrerpolicy="no-referrer"></iframe>
+    </div>
+  </body>
+</html>
   `;
-  SpreadsheetApp.getUi().showModalDialog(
-    HtmlService.createHtmlOutput(htmlContent).setWidth(280).setHeight(140),
-    'ヘルプ'
-  );
 }
 
 function getSelectedRowPreviewInfo() {
