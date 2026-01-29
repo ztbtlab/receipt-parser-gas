@@ -1430,7 +1430,7 @@ function analyzeMoneyForward() {
           accountRules,
           settings.apiKey
         )
-        : '未入力';
+        : '未確定勘定';
 
       const partnerName = resolvePartnerName_(invoiceNumber, partnerMap, vendorName);
       const merged = {
