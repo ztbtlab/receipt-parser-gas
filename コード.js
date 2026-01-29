@@ -11,6 +11,7 @@ const DESTINATION_SHEET_NAME = '移動先リスト';
 const FILE_NAME_RULE_SHEET_NAME = 'ファイル名ルール';
 const ACCOUNT_RULE_SHEET_NAME = '勘定科目ルール';
 const LOG_SHEET_NAME = 'ログ';
+const HELP_URL = 'https://ztbtlab.github.io/receipt-parser-gas/';
 
 const SETTINGS_KEYS = {
   folderUrl: '対象フォルダURL',
@@ -118,6 +119,7 @@ function onOpen() {
     .addItem('5. マネフォCSVダウンロード', 'downloadMoneyForwardCsv')
     .addSeparator()
     .addItem('画像プレビューを開く', 'showImageSidebar')
+    .addItem('ヘルプを見る', 'showHelp')
     .addSeparator()
     .addSubMenu(settingsMenu)
     .addToUi();
@@ -2160,6 +2162,23 @@ function showImageSidebar() {
   const html = HtmlService.createHtmlOutput(buildImageSidebarHtml_())
     .setTitle('画像プレビュー');
   SpreadsheetApp.getUi().showSidebar(html);
+}
+
+function showHelp() {
+  const htmlContent = `
+    <html>
+      <body style="font-family: Arial, sans-serif; font-size: 13px;">
+        <p>ヘルプページを開きます。</p>
+        <p>
+          <a href="${HELP_URL}" target="_blank" rel="noopener">ヘルプを開く</a>
+        </p>
+      </body>
+    </html>
+  `;
+  SpreadsheetApp.getUi().showModalDialog(
+    HtmlService.createHtmlOutput(htmlContent).setWidth(280).setHeight(140),
+    'ヘルプ'
+  );
 }
 
 function getSelectedRowPreviewInfo() {
