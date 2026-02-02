@@ -1744,7 +1744,6 @@ function normalizePaymentMethod_(value) {
   }
 
   if (text.includes('現金')) return '現金';
-  if (text.includes('不明')) return '現金';
   return '現金';
 }
 
