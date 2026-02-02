@@ -1768,7 +1768,7 @@ function normalizeTaxCategory_(value) {
     .replace(/\s+/g, '');
 
   if (normalized.includes('軽減税率') || /(^|[^0-9])8%(?!\d)/.test(normalized)) {
-    return '軽減税率';
+    return '8%';
   }
   return '10%';
 }
@@ -1789,7 +1789,7 @@ function normalizeCardInfo_(value, paymentMethod) {
 }
 
 function resolveMoneyForwardTaxCategory_(value) {
-  return normalizeTaxCategory_(value) === '軽減税率'
+  return normalizeTaxCategory_(value) === '8%'
     ? MF_TAX_CATEGORY_REDUCED
     : MF_TAX_CATEGORY_STANDARD;
 }
@@ -2079,7 +2079,7 @@ function callGeminiApi(base64Data, mimeType, apiKey) {
     不明な項目は空文字 "" または 0 を入れる（null/undefinedは使わない）。
 
     出力スキーマ（キー順固定）:
-    {"paymentDate":"YYYY/MM/DD","paymentMethod":"現金|クレカ|PayPay|電子マネー|銀行振込","cardInfo":"カード(1234)","vendorName":"取引先名","invoiceNumber":"T1234567890123","summary":"品目（概要）","taxCategory":"10%|軽減税率","amount":12345}
+    {"paymentDate":"YYYY/MM/DD","paymentMethod":"現金|クレカ|PayPay|電子マネー|銀行振込","cardInfo":"カード(1234)","vendorName":"取引先名","invoiceNumber":"T1234567890123","summary":"品目（概要）","taxCategory":"10%|8%","amount":12345}
 
     抽出ルール:
     1) paymentDate（支払日）
@@ -2116,8 +2116,8 @@ function callGeminiApi(base64Data, mimeType, apiKey) {
     - 不明なら ""
 
     6) taxCategory（消費税区分）
-    - 候補は必ずこの2つから1つだけ: 「10%」「軽減税率」
-    - レシート本文に「軽減税率」表記、または軽減税率対象としての「8%/8％」表記を確認できる場合は「軽減税率」
+    - 候補は必ずこの2つから1つだけ: 「10%」「8%」
+    - レシート本文に「軽減税率」表記、または軽減税率対象としての「8%/8％」表記を確認できる場合は「8%」
     - それ以外は「10%」
 
     7) amount（税込合計）
