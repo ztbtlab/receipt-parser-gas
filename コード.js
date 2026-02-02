@@ -2163,6 +2163,14 @@ function showImageSidebar() {
   SpreadsheetApp.getUi().showSidebar(html);
 }
 
+function showImagePreviewDialog() {
+  const initialInfo = getSelectedRowPreviewInfo();
+  const html = HtmlService.createHtmlOutput(buildImagePreviewDialogHtml_(initialInfo))
+    .setWidth(900)
+    .setHeight(650);
+  SpreadsheetApp.getUi().showModelessDialog(html, '画像プレビュー（拡大）');
+}
+
 function showHelp() {
   const html = HtmlService.createHtmlOutput(buildHelpDialogHtml_())
     .setTitle('ヘルプ')
@@ -2270,28 +2278,105 @@ function buildImageSidebarHtml_() {
           body { font-family: Arial, sans-serif; font-size: 12px; }
           .title { font-weight: bold; margin-bottom: 6px; }
           .meta { color: #666; margin-bottom: 8px; }
+          .actions { display: flex; gap: 8px; margin: 8px 0; }
           .preview { width: 100%; height: 320px; border: 1px solid #ddd; }
           .thumb { width: 100%; border: 1px solid #ddd; margin-top: 8px; }
           .note { color: #888; margin-top: 6px; font-size: 11px; }
-          .button { margin: 8px 0; }
         </style>
       </head>
       <body>
         <div class="title">画像プレビュー</div>
         <div id="meta" class="meta">行を選択してください。</div>
-        <button class="button" onclick="refresh()">更新</button>
+        <div class="actions">
+          <button onclick="refresh()">更新</button>
+          <button id="openPopup" onclick="openPopup()" disabled>拡大表示</button>
+        </div>
         <iframe id="preview" class="preview" src=""></iframe>
         <img id="thumb" class="thumb" src="" />
         <div class="note">プレビューが表示されない場合はサムネイルを確認してください。</div>
         <script>
           let lastFileId = '';
+          function openPopup() {
+            google.script.run.showImagePreviewDialog();
+          }
+          function refresh() {
+            google.script.run.withSuccessHandler(render).getSelectedRowPreviewInfo();
+          }
+          function render(data) {
+            if (!data) return;
+            const button = document.getElementById('openPopup');
+            if (data.message) {
+              lastFileId = '';
+              document.getElementById('meta').textContent = data.message;
+              document.getElementById('preview').src = '';
+              document.getElementById('thumb').src = '';
+              button.disabled = true;
+              return;
+            }
+            if (data.fileId && data.fileId === lastFileId) return;
+            lastFileId = data.fileId || '';
+            document.getElementById('meta').textContent = data.fileName || '';
+            document.getElementById('preview').src = data.previewUrl || '';
+            document.getElementById('thumb').src = data.thumbnailUrl || '';
+            button.disabled = !Boolean(data.previewUrl);
+          }
+          refresh();
+          setInterval(refresh, 3000);
+        </script>
+      </body>
+    </html>
+  `;
+}
+
+function escapeJsonForInlineScript_(value) {
+  return JSON.stringify(value || {})
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026');
+}
+
+function buildImagePreviewDialogHtml_(initialInfo) {
+  const initialDataJson = escapeJsonForInlineScript_(initialInfo);
+  return `
+    <html>
+      <head>
+        <style>
+          html, body { height: 100%; margin: 0; font-family: Arial, sans-serif; font-size: 12px; }
+          .root { display: flex; flex-direction: column; height: 100%; padding: 12px; box-sizing: border-box; }
+          .meta { color: #666; margin-bottom: 8px; min-height: 18px; }
+          .actions { display: flex; gap: 8px; margin-bottom: 8px; }
+          .preview { flex: 1; width: 100%; border: 1px solid #ddd; min-height: 320px; }
+          .thumb { width: 100%; border: 1px solid #ddd; margin-top: 8px; max-height: 140px; object-fit: contain; }
+          .note { color: #888; margin-top: 6px; font-size: 11px; }
+        </style>
+      </head>
+      <body>
+        <div class="root">
+          <div id="meta" class="meta">行を選択してください。</div>
+          <div class="actions">
+            <button onclick="refresh()">更新</button>
+            <button onclick="closeDialog()">閉じる</button>
+          </div>
+          <iframe id="preview" class="preview" src=""></iframe>
+          <img id="thumb" class="thumb" src="" />
+          <div class="note">選択行が変わると、3秒ごとにプレビューが自動更新されます。</div>
+        </div>
+        <script>
+          const initialData = ${initialDataJson};
+          let lastFileId = '';
+          function closeDialog() {
+            google.script.host.close();
+          }
           function refresh() {
             google.script.run.withSuccessHandler(render).getSelectedRowPreviewInfo();
           }
           function render(data) {
             if (!data) return;
             if (data.message) {
+              lastFileId = '';
               document.getElementById('meta').textContent = data.message;
+              document.getElementById('preview').src = '';
+              document.getElementById('thumb').src = '';
               return;
             }
             if (data.fileId && data.fileId === lastFileId) return;
@@ -2300,7 +2385,7 @@ function buildImageSidebarHtml_() {
             document.getElementById('preview').src = data.previewUrl || '';
             document.getElementById('thumb').src = data.thumbnailUrl || '';
           }
-          refresh();
+          render(initialData);
           setInterval(refresh, 3000);
         </script>
       </body>
