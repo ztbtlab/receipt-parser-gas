@@ -1673,7 +1673,7 @@ function normalizeReceiptData_(data) {
 
 function normalizePaymentMethod_(value) {
   const text = normalizeText_(value);
-  if (!text) return '不明';
+  if (!text) return '現金';
 
   const compact = text.replace(/\s+/g, '');
   const lower = text.toLowerCase();
@@ -1744,8 +1744,8 @@ function normalizePaymentMethod_(value) {
   }
 
   if (text.includes('現金')) return '現金';
-  if (text.includes('不明')) return '不明';
-  return '不明';
+  if (text.includes('不明')) return '現金';
+  return '現金';
 }
 
 function normalizeCardInfo_(value, paymentMethod) {
@@ -2047,7 +2047,7 @@ function callGeminiApi(base64Data, mimeType, apiKey) {
     不明な項目は空文字 "" または 0 を入れる（null/undefinedは使わない）。
 
     出力スキーマ（キー順固定）:
-    {"paymentDate":"YYYY/MM/DD","paymentMethod":"現金|クレカ|PayPay|電子マネー|銀行振込|不明","cardInfo":"カード(1234)","vendorName":"取引先名","invoiceNumber":"T1234567890123","summary":"品目（概要）","amount":12345}
+    {"paymentDate":"YYYY/MM/DD","paymentMethod":"現金|クレカ|PayPay|電子マネー|銀行振込","cardInfo":"カード(1234)","vendorName":"取引先名","invoiceNumber":"T1234567890123","summary":"品目（概要）","amount":12345}
 
     抽出ルール:
     1) paymentDate（支払日）
@@ -2061,7 +2061,7 @@ function callGeminiApi(base64Data, mimeType, apiKey) {
     - Suica/PASMO/ICOCA/TOICA/manaca/はやかけん/nimoca/SUGOCA/楽天Edy/WAON/nanaco/交通系IC は「電子マネー」
     - 「PayPay」表記があれば「PayPay」
     - 「振込」「銀行」「口座」「振込先」等があり、支払方法が振込と読める場合は「銀行振込」
-    - 判別できない場合は "不明"
+    - 判別できない場合は "現金"
 
     2-2) cardInfo（カード情報）
     - 支払い方法がクレカの場合、カード番号の下4桁を抽出して「カード(1234)」形式で出力
