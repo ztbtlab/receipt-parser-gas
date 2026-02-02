@@ -31,7 +31,8 @@ const CREDIT_SUB_ACCOUNT_CANDIDATES = ['カード情報', '空欄'];
 const EMPTY_CELL_COLOR = '#fff2cc';
 const DUPLICATE_CELL_COLOR = '#f4cccc';
 
-const MF_TAX_CATEGORY = '課税仕入 10%';
+const MF_TAX_CATEGORY_STANDARD = '課税仕入 10%';
+const MF_TAX_CATEGORY_REDUCED = '課税仕入 8%';
 const MF_CARD_SUB_ACCOUNT = '三井住友ゴールドカード';
 const MF_PROCESSED_PREFIX = 'CSV済';
 const MF_CSV_HEADERS = [
@@ -93,7 +94,8 @@ const RESULT_SHEET_HEADERS = [
   'インボイス番号',
   '品目（概要）',
   '金額',
-  '解析メモ'
+  '解析メモ',
+  '消費税区分'
 ];
 
 // ※APIキーは「スクリプトプロパティ」から、フォルダURLは「設定」シートから読み込みます
@@ -128,7 +130,7 @@ function onOpen() {
 // ==================================================
 // 解析結果シートの列構成を整える
 // A:ファイルID, B:リンク, C:元ファイル名, D:変更案, E:移動先, F:ステータス,
-// G:支払日, H:支払い方法, I:取引先, J:インボイス番号, K:品目（概要）, L:金額, M:解析メモ
+// G:支払日, H:支払い方法, I:カード情報, J:取引先, K:インボイス番号, L:品目（概要）, M:金額, N:解析メモ, O:消費税区分
 // ==================================================
 function ensureResultSheetLayout_(sheet) {
   if (sheet.getLastRow() === 0) {
@@ -146,6 +148,7 @@ function ensureResultSheetLayout_(sheet) {
     sheet.setColumnWidth(12, 240);
     sheet.setColumnWidth(13, 100);
     sheet.setColumnWidth(14, 260);
+    sheet.setColumnWidth(15, 120);
     sheet.setFrozenRows(1);
     return;
   }
@@ -184,7 +187,8 @@ function ensureResultSheetLayout_(sheet) {
       'インボイス番号',
       '品目（概要）',
       '金額',
-      '解析メモ'
+      '解析メモ',
+      '消費税区分'
     ];
     let insertAfter = statusColFinal;
     for (const header of extractHeaders) {
@@ -214,6 +218,7 @@ function ensureResultSheetLayout_(sheet) {
   sheet.setColumnWidth(12, 240);
   sheet.setColumnWidth(13, 100);
   sheet.setColumnWidth(14, 260);
+  sheet.setColumnWidth(15, 120);
   sheet.setFrozenRows(1);
 }
 
@@ -1002,6 +1007,7 @@ function scanToSheet() {
       let invoiceNumber = '';
       let summary = '';
       let amount = '';
+      let taxCategory = '';
       let memo = '';
       let duplicateFlag = false;
 
@@ -1013,6 +1019,7 @@ function scanToSheet() {
         invoiceNumber = analysis.invoiceNumber || '';
         summary = normalizeText_(analysis.summary || '');
         amount = analysis.amount ? analysis.amount : '';
+        taxCategory = normalizeTaxCategory_(analysis.taxCategory);
         status = '未処理';
 
         const candidate = buildFileNameCandidate_(
@@ -1062,7 +1069,8 @@ function scanToSheet() {
         invoiceNumber,
         summary,
         amount,
-        memo
+        memo,
+        taxCategory
       ]);
 
       const rowIndex = sheet.getLastRow();
@@ -1095,7 +1103,7 @@ function scanToSheet() {
     } catch (e) {
       console.error(e);
       errorCount++;
-      sheet.appendRow([id, '', fileName, '', '', 'エラー: ' + e.toString(), '', '', '', '', '', '', '', '']);
+      sheet.appendRow([id, '', fileName, '', '', 'エラー: ' + e.toString(), '', '', '', '', '', '', '', '', '']);
       logError_('レシート解析', id, fileName, e.message);
     }
   }
@@ -1417,6 +1425,7 @@ function analyzeMoneyForward() {
       const invoiceNumber = normalizeInvoiceNumber_(row[10]);
       const summary = normalizeText_(row[11]);
       const amount = normalizeAmount_(row[12]);
+      const taxCategory = normalizeTaxCategory_(row[14]);
 
       const accountTitle = accountRules.length > 0
         ? callGeminiApiForAccountTitle_(
@@ -1443,6 +1452,7 @@ function analyzeMoneyForward() {
         summary: summary,
         paymentMethod: paymentMethod,
         cardInfo: cardInfo,
+        taxCategory: taxCategory,
         accountTitle: accountTitle
       };
       const rowData = buildMoneyForwardRow_(
@@ -1667,6 +1677,7 @@ function normalizeReceiptData_(data) {
     vendorName: normalizeText_(data.vendorName),
     summary: normalizeText_(data.summary),
     paymentMethod: normalizePaymentMethod_(data.paymentMethod),
+    taxCategory: normalizeTaxCategory_(data.taxCategory),
     accountTitle: normalizeAccountTitle_(data.accountTitle)
   };
 }
@@ -1747,6 +1758,21 @@ function normalizePaymentMethod_(value) {
   return '現金';
 }
 
+function normalizeTaxCategory_(value) {
+  const text = normalizeText_(value);
+  if (!text) return '10%';
+
+  const normalized = String(text)
+    .replace(/[０-９]/g, (s) => String.fromCharCode(s.charCodeAt(0) - 0xFEE0))
+    .replace(/％/g, '%')
+    .replace(/\s+/g, '');
+
+  if (normalized.includes('軽減税率') || /(^|[^0-9])8%(?!\d)/.test(normalized)) {
+    return '軽減税率';
+  }
+  return '10%';
+}
+
 function normalizeCardInfo_(value, paymentMethod) {
   const method = normalizePaymentMethod_(paymentMethod);
   if (method !== 'クレカ') return '-';
@@ -1760,6 +1786,12 @@ function normalizeCardInfo_(value, paymentMethod) {
   }
 
   return 'カード(不明)';
+}
+
+function resolveMoneyForwardTaxCategory_(value) {
+  return normalizeTaxCategory_(value) === '軽減税率'
+    ? MF_TAX_CATEGORY_REDUCED
+    : MF_TAX_CATEGORY_STANDARD;
 }
 
 function normalizeInvoiceNumber_(value) {
@@ -1921,6 +1953,7 @@ function buildMoneyForwardRow_(transactionNo, data, partnerName, fileUrl, settin
   const memoUrl = fileUrl || '';
   const amount = data.amount || 0;
   const csvDate = normalizeDate_(data.date);
+  const taxCategory = resolveMoneyForwardTaxCategory_(data.taxCategory);
   const creditAccount =
     data.paymentMethod === 'クレカ'
       ? (settings?.creditAccountCard || '未払金')
@@ -1937,7 +1970,7 @@ function buildMoneyForwardRow_(transactionNo, data, partnerName, fileUrl, settin
     '',
     '',
     partnerName,
-    MF_TAX_CATEGORY,
+    taxCategory,
     data.invoiceNumber,
     amount,
     0,
@@ -1945,7 +1978,7 @@ function buildMoneyForwardRow_(transactionNo, data, partnerName, fileUrl, settin
     creditSubAccount,
     '',
     '',
-    MF_TAX_CATEGORY,
+    taxCategory,
     '',
     amount,
     0,
@@ -2046,7 +2079,7 @@ function callGeminiApi(base64Data, mimeType, apiKey) {
     不明な項目は空文字 "" または 0 を入れる（null/undefinedは使わない）。
 
     出力スキーマ（キー順固定）:
-    {"paymentDate":"YYYY/MM/DD","paymentMethod":"現金|クレカ|PayPay|電子マネー|銀行振込","cardInfo":"カード(1234)","vendorName":"取引先名","invoiceNumber":"T1234567890123","summary":"品目（概要）","amount":12345}
+    {"paymentDate":"YYYY/MM/DD","paymentMethod":"現金|クレカ|PayPay|電子マネー|銀行振込","cardInfo":"カード(1234)","vendorName":"取引先名","invoiceNumber":"T1234567890123","summary":"品目（概要）","taxCategory":"10%|軽減税率","amount":12345}
 
     抽出ルール:
     1) paymentDate（支払日）
@@ -2082,13 +2115,18 @@ function callGeminiApi(base64Data, mimeType, apiKey) {
     - vendorName と同じ文字列だけになるのは避ける（内容が取れない場合は vendorName で可）
     - 不明なら ""
 
-    6) amount（税込合計）
+    6) taxCategory（消費税区分）
+    - 候補は必ずこの2つから1つだけ: 「10%」「軽減税率」
+    - レシート本文に「軽減税率」表記、または軽減税率対象としての「8%/8％」表記を確認できる場合は「軽減税率」
+    - それ以外は「10%」
+
+    7) amount（税込合計）
     - 支払総額（税込）の整数。小数は四捨五入せず小数点以下を無視
     - 「合計」「総計」「お支払金額」「ご請求金額」等を優先
     - 不明なら 0
 
     出力例（JSONのみ）:
-    {"paymentDate":"2026/01/18","paymentMethod":"クレカ","cardInfo":"カード(2235)","vendorName":"ENEOS","invoiceNumber":"T1234567890123","summary":"ガソリン代","amount":4500}
+    {"paymentDate":"2026/01/18","paymentMethod":"クレカ","cardInfo":"カード(2235)","vendorName":"ENEOS","invoiceNumber":"T1234567890123","summary":"ガソリン代","taxCategory":"10%","amount":4500}
   `;
 
   const payload = {
@@ -2140,6 +2178,7 @@ function normalizeReceiptExtraction_(data) {
     vendorName: normalizeText_(data.vendorName),
     invoiceNumber: normalizeInvoiceNumber_(data.invoiceNumber),
     summary: normalizeText_(data.summary),
+    taxCategory: normalizeTaxCategory_(data.taxCategory),
     amount: hasAmount ? normalizeAmount_(amountRaw) : 0
   };
 }
