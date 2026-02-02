@@ -30,6 +30,7 @@ const CREDIT_SUB_ACCOUNT_CANDIDATES = ['カード情報', '空欄'];
 
 const EMPTY_CELL_COLOR = '#fff2cc';
 const DUPLICATE_CELL_COLOR = '#f4cccc';
+const MIXED_TAX_CELL_COLOR = '#fce5cd';
 
 const MF_TAX_CATEGORY_STANDARD = '課税仕入 10%';
 const MF_TAX_CATEGORY_REDUCED = '課税仕入 8%';
@@ -793,6 +794,12 @@ function highlightEmptyExtractionCells_(sheet, rowIndex) {
   range.setBackgrounds([backgrounds]);
 }
 
+function highlightTaxCategoryCell_(sheet, rowIndex, taxCategory) {
+  const normalized = normalizeTaxCategory_(taxCategory);
+  const color = normalized === '混在あり' ? MIXED_TAX_CELL_COLOR : null;
+  sheet.getRange(rowIndex, 15).setBackground(color);
+}
+
 function collectMissingExtractionLabels_(analysis) {
   const missing = [];
   if (!analysis.paymentDate) missing.push('支払日');
@@ -1078,6 +1085,7 @@ function scanToSheet() {
 
       applyDestinationValidation_(sheet, rowIndex);
       highlightEmptyExtractionCells_(sheet, rowIndex);
+      highlightTaxCategoryCell_(sheet, rowIndex, taxCategory);
       if (duplicateFlag) {
         sheet.getRange(rowIndex, 4).setBackground(DUPLICATE_CELL_COLOR);
       }
@@ -1272,6 +1280,7 @@ function regenerateAllNameCandidates() {
         sheet.getRange(rowIndex, 4).setValue('');
         sheet.getRange(rowIndex, 4).setBackground(null);
         highlightEmptyExtractionCells_(sheet, rowIndex);
+        highlightTaxCategoryCell_(sheet, rowIndex, row[14]);
         continue;
       }
 
@@ -1286,6 +1295,7 @@ function regenerateAllNameCandidates() {
       sheet.getRange(rowIndex, 4).setValue(resolved.full);
       sheet.getRange(rowIndex, 4).setBackground(resolved.duplicate ? DUPLICATE_CELL_COLOR : null);
       highlightEmptyExtractionCells_(sheet, rowIndex);
+      highlightTaxCategoryCell_(sheet, rowIndex, row[14]);
 
       if (resolved.full) existingFullNames.add(resolved.full);
       if (resolved.duplicate) duplicateCount++;
@@ -1759,18 +1769,55 @@ function normalizePaymentMethod_(value) {
 }
 
 function normalizeTaxCategory_(value) {
-  const text = normalizeText_(value);
-  if (!text) return '10%';
+  if (value === null || value === undefined) return '10%';
+  const text = String(value);
+  if (!text.trim()) return '10%';
 
   const normalized = String(text)
     .replace(/[０-９]/g, (s) => String.fromCharCode(s.charCodeAt(0) - 0xFEE0))
-    .replace(/％/g, '%')
-    .replace(/\s+/g, '');
+    .replace(/％/g, '%');
+  const compact = normalized.replace(/\s+/g, '');
 
-  if (normalized.includes('軽減税率') || /(^|[^0-9])8%(?!\d)/.test(normalized)) {
+  if (compact.includes('混在あり') || compact.includes('混在')) {
+    return '混在あり';
+  }
+
+  const tax8Amounts = extractTaxAmountsByRate_(normalized, 8);
+  const tax10Amounts = extractTaxAmountsByRate_(normalized, 10);
+  const has8Positive = tax8Amounts.some((amount) => amount > 0);
+  const has10Positive = tax10Amounts.some((amount) => amount > 0);
+
+  if (has8Positive && has10Positive) return '混在あり';
+  if (has10Positive && !has8Positive) return '10%';
+  if (has8Positive && !has10Positive) return '8%';
+
+  const has8Mention = compact.includes('軽減税率') || /(^|[^0-9])8%(?!\d)/.test(compact);
+  const has10Mention = /(^|[^0-9])10%(?!\d)/.test(compact);
+
+  if (has8Mention && has10Mention) return '混在あり';
+  if (has8Mention) {
     return '8%';
   }
   return '10%';
+}
+
+function extractTaxAmountsByRate_(text, rate) {
+  const lines = String(text).split(/\r?\n/);
+  const amounts = [];
+
+  for (const rawLine of lines) {
+    if (!rawLine || !rawLine.includes('消費税')) continue;
+    const line = String(rawLine).replace(/[￥¥]/g, '');
+    const pattern = new RegExp(`${rate}%[^0-9-]{0,16}([0-9][0-9,]*)`, 'g');
+    let match;
+
+    while ((match = pattern.exec(line)) !== null) {
+      const amountText = String(match[1]).replace(/,/g, '');
+      const amount = parseInt(amountText, 10);
+      if (!isNaN(amount)) amounts.push(amount);
+    }
+  }
+  return amounts;
 }
 
 function normalizeCardInfo_(value, paymentMethod) {
@@ -2079,7 +2126,7 @@ function callGeminiApi(base64Data, mimeType, apiKey) {
     不明な項目は空文字 "" または 0 を入れる（null/undefinedは使わない）。
 
     出力スキーマ（キー順固定）:
-    {"paymentDate":"YYYY/MM/DD","paymentMethod":"現金|クレカ|PayPay|電子マネー|銀行振込","cardInfo":"カード(1234)","vendorName":"取引先名","invoiceNumber":"T1234567890123","summary":"品目（概要）","taxCategory":"10%|8%","amount":12345}
+    {"paymentDate":"YYYY/MM/DD","paymentMethod":"現金|クレカ|PayPay|電子マネー|銀行振込","cardInfo":"カード(1234)","vendorName":"取引先名","invoiceNumber":"T1234567890123","summary":"品目（概要）","taxCategory":"10%|8%|混在あり","amount":12345}
 
     抽出ルール:
     1) paymentDate（支払日）
@@ -2116,8 +2163,11 @@ function callGeminiApi(base64Data, mimeType, apiKey) {
     - 不明なら ""
 
     6) taxCategory（消費税区分）
-    - 候補は必ずこの2つから1つだけ: 「10%」「8%」
-    - レシート本文に「軽減税率」表記、または軽減税率対象としての「8%/8％」表記を確認できる場合は「8%」
+    - 候補は必ずこの3つから1つだけ: 「10%」「8%」「混在あり」
+    - 内消費税の 8% と 10% の両方があり、両方の税額が 0 より大きい場合は「混在あり」
+    - 8% の税額が 0 で、10% の税額が 0 より大きい場合は「10%」
+    - 8% 側のみ税額が 0 より大きい場合は「8%」
+    - 税額の明示がなく、8%/10%の両方の記載だけある場合は「混在あり」
     - それ以外は「10%」
 
     7) amount（税込合計）
