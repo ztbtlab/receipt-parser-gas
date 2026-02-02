@@ -2328,8 +2328,15 @@ function buildImageSidebarHtml_() {
   `;
 }
 
+function escapeJsonForInlineScript_(value) {
+  return JSON.stringify(value || {})
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026');
+}
+
 function buildImagePreviewDialogHtml_(initialInfo) {
-  const initialDataJson = JSON.stringify(initialInfo || {});
+  const initialDataJson = escapeJsonForInlineScript_(initialInfo);
   return `
     <html>
       <head>
@@ -2379,7 +2386,6 @@ function buildImagePreviewDialogHtml_(initialInfo) {
             document.getElementById('thumb').src = data.thumbnailUrl || '';
           }
           render(initialData);
-          refresh();
           setInterval(refresh, 3000);
         </script>
       </body>
