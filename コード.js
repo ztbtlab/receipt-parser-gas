@@ -2005,6 +2005,9 @@ function buildMoneyForwardRow_(transactionNo, data, partnerName, fileUrl, settin
     data.paymentMethod === 'クレカ'
       ? (settings?.creditAccountCard || '未払金')
       : (settings?.creditAccountOther || '役員借入金');
+  const creditTaxCategory = normalizeText_(creditAccount) === '事業主借'
+    ? '対象外'
+    : taxCategory;
   const creditSubAccount =
     data.paymentMethod === 'クレカ'
       ? resolveCreditSubAccount_(settings, data)
@@ -2025,7 +2028,7 @@ function buildMoneyForwardRow_(transactionNo, data, partnerName, fileUrl, settin
     creditSubAccount,
     '',
     '',
-    taxCategory,
+    creditTaxCategory,
     '',
     amount,
     0,
