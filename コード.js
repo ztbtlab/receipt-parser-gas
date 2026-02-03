@@ -45,6 +45,13 @@ const MF_TRADE_PARTNER_HEADERS = [
   '登録番号',
   '法人番号'
 ];
+const ANALYSIS_STATUS_ERROR_PREFIX = 'エラー:';
+const ANALYSIS_CLEAR_ERROR_OPTION_VALUE = '__ERROR_PREFIX__';
+const ANALYSIS_CLEAR_ERROR_OPTION_LABEL = 'エラー（エラー:〜）';
+const ANALYSIS_CLEAR_STATUS_JOB_CACHE_PREFIX = 'analysis_clear_status_job:';
+const ANALYSIS_CLEAR_STATUS_JOB_CACHE_TTL_SEC = 60 * 60;
+const ANALYSIS_CLEAR_STATUS_SCAN_WINDOW_ROWS = 500;
+const ANALYSIS_CLEAR_STATUS_MAX_DELETE_ROWS = 50;
 const MF_CSV_HEADERS = [
   '取引No',
   '取引日',
@@ -1215,10 +1222,698 @@ function clearAnalysisSheet() {
     return;
   }
 
-  const range = sheet.getRange(2, 1, lastRow - 1, RESULT_SHEET_HEADERS.length);
-  range.clearContent();
-  range.setBackground(null);
-  ui.alert('解析シートのデータをクリアしました。');
+  const options = getClearAnalysisStatusOptions_(sheet);
+  if (options.length === 0) {
+    ui.alert('クリア対象のステータスがありません。');
+    return;
+  }
+
+  const html = HtmlService.createHtmlOutput(buildClearAnalysisStatusDialogHtml_(options))
+    .setWidth(520)
+    .setHeight(620);
+  ui.showModalDialog(html, '解析シートのクリア');
+}
+
+function getClearAnalysisStatusOptions_(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+
+  const header = sheet
+    .getRange(1, 1, 1, Math.max(RESULT_SHEET_HEADERS.length, sheet.getLastColumn()))
+    .getValues()[0];
+  const statusCol = header.indexOf('ステータス') + 1;
+  if (statusCol === 0) return [];
+
+  const values = sheet.getRange(2, statusCol, lastRow - 1, 1).getValues();
+  const unique = new Set();
+  let hasError = false;
+  for (const [value] of values) {
+    const status = normalizeText_(value);
+    if (!status) continue;
+    if (status.startsWith(ANALYSIS_STATUS_ERROR_PREFIX)) {
+      hasError = true;
+      continue;
+    }
+    unique.add(status);
+  }
+
+  const options = [];
+  if (hasError) {
+    options.push({
+      value: ANALYSIS_CLEAR_ERROR_OPTION_VALUE,
+      label: ANALYSIS_CLEAR_ERROR_OPTION_LABEL
+    });
+  }
+
+  const sorted = Array.from(unique);
+  sorted.sort();
+  for (const status of sorted) {
+    options.push({ value: status, label: status });
+  }
+  return options;
+}
+
+function buildClearAnalysisStatusDialogHtml_(options) {
+  const optionsJson = JSON.stringify(options || []);
+  return `
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      html,
+      body {
+        font-family: "Noto Sans JP", Arial, sans-serif;
+        margin: 0;
+        padding: 0;
+      }
+      .wrap {
+        padding: 16px;
+      }
+      .title {
+        font-size: 14px;
+        font-weight: 700;
+        margin: 0 0 8px;
+      }
+      .desc {
+        color: #555;
+        font-size: 12px;
+        line-height: 1.5;
+        margin: 0 0 12px;
+      }
+      .list {
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        padding: 10px;
+        max-height: 420px;
+        overflow: auto;
+      }
+      .item {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+        padding: 6px 0;
+      }
+      .item label {
+        cursor: pointer;
+        font-size: 13px;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      button {
+        background: #f3f3f3;
+        border: 1px solid #d0d0d0;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 12px;
+        padding: 8px 12px;
+      }
+      button.primary {
+        background: #1a73e8;
+        border-color: #1a73e8;
+        color: #fff;
+      }
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.6;
+      }
+      .msg {
+        color: #666;
+        font-size: 12px;
+        margin-top: 10px;
+        min-height: 16px;
+      }
+      .log {
+        background: #fafafa;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        color: #444;
+        font-size: 11px;
+        line-height: 1.4;
+        margin-top: 8px;
+        max-height: 120px;
+        overflow: auto;
+        padding: 8px;
+        white-space: pre-wrap;
+      }
+      .warn {
+        color: #b45309;
+      }
+      .muted {
+        color: #888;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="title">削除するステータスを選択</div>
+      <p class="desc">
+        チェックしたステータスの行を削除し、行を詰めます。<span class="warn">削除は元に戻せません。</span>
+      </p>
+      <div id="list" class="list"></div>
+      <div class="actions">
+        <button type="button" id="selectAll">全選択</button>
+        <button type="button" id="clearAll">全解除</button>
+        <button type="button" id="run" class="primary">実行</button>
+        <button type="button" id="cancel">キャンセル</button>
+      </div>
+      <div id="msg" class="msg muted"></div>
+      <div id="log" class="log"></div>
+    </div>
+
+    <script>
+      const options = ${optionsJson};
+
+      const list = document.getElementById('list');
+      const msg = document.getElementById('msg');
+      const log = document.getElementById('log');
+      const btnSelectAll = document.getElementById('selectAll');
+      const btnClearAll = document.getElementById('clearAll');
+      const btnRun = document.getElementById('run');
+      const btnCancel = document.getElementById('cancel');
+
+      const startedAt = Date.now();
+      let heartbeatTimer = null;
+      let waitLogTimer = null;
+      let activeJobId = '';
+      let totalRows = 0;
+      let deletedRows = 0;
+
+      function logLine(text) {
+        const sec = ((Date.now() - startedAt) / 1000).toFixed(1);
+        log.textContent += '[+' + sec + 's] ' + text + '\\n';
+        log.scrollTop = log.scrollHeight;
+      }
+
+      function startWaitLog(label) {
+        const start = Date.now();
+        stopWaitLog();
+        waitLogTimer = setInterval(() => {
+          const sec = Math.floor((Date.now() - start) / 1000);
+          logLine(label + ' 応答待ち... ' + sec + '秒');
+        }, 5000);
+      }
+
+      function stopWaitLog() {
+        if (waitLogTimer) clearInterval(waitLogTimer);
+        waitLogTimer = null;
+      }
+
+      function setBusy(busy) {
+        btnSelectAll.disabled = busy;
+        btnClearAll.disabled = busy;
+        btnRun.disabled = busy;
+        list.querySelectorAll('input[type="checkbox"]').forEach((el) => { el.disabled = busy; });
+      }
+
+      function ensureGoogleScriptRun_() {
+        try {
+          if (google && google.script && google.script.run) return true;
+        } catch (e) {
+          // ignore
+        }
+        stopHeartbeat();
+        stopWaitLog();
+        setBusy(false);
+        const message = 'google.script.run が利用できません（ダイアログを閉じて再度お試しください）';
+        setMsg('エラー: ' + message, false);
+        logLine('失敗: ' + message);
+        return false;
+      }
+
+      function setMsg(text, muted) {
+        msg.textContent = text || '';
+        msg.className = muted ? 'msg muted' : 'msg';
+      }
+
+      function startHeartbeat(prefix) {
+        const start = Date.now();
+        stopHeartbeat();
+        heartbeatTimer = setInterval(() => {
+          const sec = Math.floor((Date.now() - start) / 1000);
+          setMsg(prefix + '（サーバー応答待ち: ' + sec + '秒）', true);
+        }, 1000);
+      }
+
+      function stopHeartbeat() {
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+
+      function render() {
+        list.innerHTML = '';
+        if (!options || options.length === 0) {
+          const p = document.createElement('div');
+          p.className = 'muted';
+          p.textContent = 'ステータスが見つかりません。';
+          list.appendChild(p);
+          btnRun.disabled = true;
+          return;
+        }
+
+        options.forEach((opt, idx) => {
+          const id = 'status_' + idx;
+          const row = document.createElement('div');
+          row.className = 'item';
+
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.id = id;
+          checkbox.value = opt.value;
+
+          const label = document.createElement('label');
+          label.htmlFor = id;
+          label.textContent = opt.label;
+
+          row.appendChild(checkbox);
+          row.appendChild(label);
+          list.appendChild(row);
+        });
+      }
+
+      function getSelected() {
+        return Array.from(list.querySelectorAll('input[type=\"checkbox\"]:checked')).map((el) => el.value);
+      }
+
+      btnSelectAll.addEventListener('click', () => {
+        list.querySelectorAll('input[type=\"checkbox\"]').forEach((el) => { el.checked = true; });
+      });
+
+      btnClearAll.addEventListener('click', () => {
+        list.querySelectorAll('input[type=\"checkbox\"]').forEach((el) => { el.checked = false; });
+      });
+
+      btnCancel.addEventListener('click', () => {
+        logLine('キャンセルしました（ダイアログを閉じます）');
+        google.script.host.close();
+      });
+
+      btnRun.addEventListener('click', () => {
+        const selected = getSelected();
+        if (selected.length === 0) {
+          setMsg('ステータスを1つ以上選択してください。', false);
+          return;
+        }
+        setBusy(true);
+        setMsg('準備中...', true);
+        log.textContent = '';
+        logLine('実行開始');
+        logLine('選択: ' + selected.join(', '));
+        startHeartbeat('準備中...');
+        if (!ensureGoogleScriptRun_()) return;
+        logLine('サーバー呼び出し: startClearAnalysisStatusJob');
+        startWaitLog('startClearAnalysisStatusJob');
+
+        try {
+          google.script.run
+            .withSuccessHandler((job) => {
+              stopHeartbeat();
+              stopWaitLog();
+              if (!job || !job.jobId) {
+                setBusy(false);
+                setMsg('対象となる行はありませんでした。', false);
+                logLine('対象0件のため終了');
+                return;
+              }
+              activeJobId = job.jobId;
+              totalRows = job.totalRows || 0;
+              deletedRows = 0;
+              logLine('削除ジョブ作成: ' + activeJobId);
+              logLine('削除対象: ' + totalRows + '行');
+              runStep();
+            })
+            .withFailureHandler((err) => {
+              stopHeartbeat();
+              stopWaitLog();
+              setBusy(false);
+              const message = err && err.message ? err.message : String(err);
+              setMsg('エラー: ' + message, false);
+              logLine('失敗: ' + message);
+            })
+            .startClearAnalysisStatusJob(selected);
+        } catch (e) {
+          stopHeartbeat();
+          stopWaitLog();
+          setBusy(false);
+          const message = e && e.message ? e.message : String(e);
+          setMsg('エラー: ' + message, false);
+          logLine('失敗: ' + message);
+        }
+      });
+
+      function runStep() {
+        if (!activeJobId) {
+          setBusy(false);
+          setMsg('エラー: ジョブIDがありません。', false);
+          return;
+        }
+
+        const prefix = totalRows > 0
+          ? ('削除中... ' + deletedRows + '/' + totalRows + '行')
+          : ('削除中... ' + deletedRows + '行');
+        setMsg(prefix, true);
+        startHeartbeat(prefix);
+        if (!ensureGoogleScriptRun_()) return;
+        logLine('サーバー呼び出し: processClearAnalysisStatusJob');
+        startWaitLog('processClearAnalysisStatusJob');
+
+        try {
+          google.script.run
+            .withSuccessHandler((res) => {
+              stopHeartbeat();
+              stopWaitLog();
+              if (!res) {
+                setBusy(false);
+                setMsg('エラー: サーバー応答が不正です。', false);
+                logLine('失敗: 不正な応答');
+                return;
+              }
+
+              deletedRows = typeof res.deletedRows === 'number' ? res.deletedRows : deletedRows;
+              const processedRows = typeof res.processedRows === 'number' ? res.processedRows : 0;
+              const scannedRows = typeof res.scannedRows === 'number' ? res.scannedRows : 0;
+              const cursorRow = typeof res.cursorRow === 'number' ? res.cursorRow : 0;
+
+              const totalPart = totalRows > 0 ? ('/' + totalRows) : '';
+              logLine('削除ステップ完了: +' + processedRows + '行（累計 ' + deletedRows + totalPart + '）');
+              if (scannedRows > 0) {
+                logLine('スキャン: ' + scannedRows + '行（次の走査行: ' + cursorRow + '）');
+              }
+
+              if (res.done) {
+                setMsg('完了しました。', false);
+                logLine('完了');
+                google.script.host.close();
+                return;
+              }
+
+              const nextMsg = totalRows > 0
+                ? ('削除中... ' + deletedRows + '/' + totalRows + '行（次の走査行: ' + cursorRow + '）')
+                : ('削除中... ' + deletedRows + '行（次の走査行: ' + cursorRow + '）');
+              setMsg(nextMsg, true);
+              setTimeout(runStep, 50);
+            })
+            .withFailureHandler((err) => {
+              stopHeartbeat();
+              stopWaitLog();
+              setBusy(false);
+              const message = err && err.message ? err.message : String(err);
+              setMsg('エラー: ' + message, false);
+              logLine('失敗: ' + message);
+            })
+            .processClearAnalysisStatusJob(activeJobId);
+        } catch (e) {
+          stopHeartbeat();
+          stopWaitLog();
+          setBusy(false);
+          const message = e && e.message ? e.message : String(e);
+          setMsg('エラー: ' + message, false);
+          logLine('失敗: ' + message);
+        }
+      }
+
+      render();
+      setMsg('', true);
+      logLine('ダイアログを開きました');
+      // 疎通確認（google.script.run が有効か／サーバーが応答するか）をログに出す
+      (function pingServer_() {
+        if (!ensureGoogleScriptRun_()) return;
+        const start = Date.now();
+        logLine('サーバー疎通確認中...');
+        startWaitLog('pingClearAnalysisStatusDialog');
+        try {
+          google.script.run
+            .withSuccessHandler((res) => {
+              stopWaitLog();
+              const ms = Date.now() - start;
+              if (res && res.ok) {
+                logLine('サーバー疎通: OK (' + ms + 'ms)');
+              } else {
+                logLine('サーバー疎通: 応答あり (' + ms + 'ms)');
+              }
+            })
+            .withFailureHandler((err) => {
+              stopWaitLog();
+              const message = err && err.message ? err.message : String(err);
+              logLine('サーバー疎通: NG (' + message + ')');
+            })
+            .pingClearAnalysisStatusDialog();
+        } catch (e) {
+          stopWaitLog();
+          const message = e && e.message ? e.message : String(e);
+          logLine('サーバー疎通: NG (' + message + ')');
+        }
+      })();
+    </script>
+  </body>
+</html>
+  `;
+}
+
+function pingClearAnalysisStatusDialog() {
+  return pingClearAnalysisStatusDialog_();
+}
+
+function pingClearAnalysisStatusDialog_() {
+  return { ok: true, now: Date.now() };
+}
+
+function startClearAnalysisStatusJob(selectedValues) {
+  return startClearAnalysisStatusJob_(selectedValues);
+}
+
+function startClearAnalysisStatusJob_(selectedValues) {
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(5 * 1000)) {
+    throw new Error('スプレッドシートが他の処理中です。しばらくして再度お試しください。');
+  }
+
+  try {
+    const sheet = getOrCreateAnalysisSheet_();
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) throw new Error('解析シートにデータがありません。');
+
+    const selected = Array.isArray(selectedValues)
+      ? selectedValues.map((value) => normalizeText_(value)).filter((value) => value)
+      : [];
+    if (selected.length === 0) throw new Error('ステータスが選択されていません。');
+
+    const header = sheet
+      .getRange(1, 1, 1, Math.max(RESULT_SHEET_HEADERS.length, sheet.getLastColumn()))
+      .getValues()[0];
+    const statusCol = header.indexOf('ステータス') + 1;
+    if (statusCol === 0) throw new Error('解析シートに「ステータス」列が見つかりません。');
+
+    const jobId = Utilities.getUuid();
+    const includeError = selected.includes(ANALYSIS_CLEAR_ERROR_OPTION_VALUE);
+    const state = {
+      selected: selected,
+      includeError: includeError,
+      statusCol: statusCol,
+      cursorRow: lastRow,
+      deletedRows: 0,
+      createdAt: Date.now()
+    };
+    CacheService.getUserCache().put(
+      getClearAnalysisStatusJobCacheKey_(jobId),
+      JSON.stringify(state),
+      ANALYSIS_CLEAR_STATUS_JOB_CACHE_TTL_SEC
+    );
+    return { jobId: jobId, totalRows: 0 };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function processClearAnalysisStatusJob(jobId) {
+  return processClearAnalysisStatusJob_(jobId);
+}
+
+function processClearAnalysisStatusJob_(jobId) {
+  const cache = CacheService.getUserCache();
+  const cacheKey = getClearAnalysisStatusJobCacheKey_(normalizeText_(jobId));
+  const text = cache.get(cacheKey);
+  if (!text) {
+    throw new Error('処理状態が見つかりませんでした。もう一度お試しください。');
+  }
+
+  const state = JSON.parse(text);
+  if (!state || !Array.isArray(state.selected)) {
+    throw new Error('処理状態が不正です。もう一度お試しください。');
+  }
+
+  const sheet = getOrCreateAnalysisSheet_();
+
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(20 * 1000)) {
+    throw new Error('スプレッドシートが他の処理中です。しばらくして再度お試しください。');
+  }
+
+  const header = sheet
+    .getRange(1, 1, 1, Math.max(RESULT_SHEET_HEADERS.length, sheet.getLastColumn()))
+    .getValues()[0];
+  const statusCol = header.indexOf('ステータス') + 1;
+  if (statusCol === 0) {
+    lock.releaseLock();
+    throw new Error('解析シートに「ステータス」列が見つかりません。');
+  }
+
+  const selectedSet = new Set(
+    state.selected
+      .map((value) => normalizeText_(value))
+      .filter((value) => value && value !== ANALYSIS_CLEAR_ERROR_OPTION_VALUE)
+  );
+  const includeError = !!state.includeError;
+
+  let cursorRow = Math.min(
+    typeof state.cursorRow === 'number' ? state.cursorRow : sheet.getLastRow(),
+    sheet.getLastRow()
+  );
+  let scannedRows = 0;
+  let processedRows = 0;
+  try {
+    const startTime = Date.now();
+    const maxWindows = 5;
+    let windows = 0;
+
+    while (
+      cursorRow >= 2 &&
+      processedRows < ANALYSIS_CLEAR_STATUS_MAX_DELETE_ROWS &&
+      windows < maxWindows &&
+      Date.now() - startTime < 20 * 1000
+    ) {
+      const windowEnd = cursorRow;
+      const windowStart = Math.max(2, windowEnd - ANALYSIS_CLEAR_STATUS_SCAN_WINDOW_ROWS + 1);
+      const windowValues = sheet.getRange(windowStart, statusCol, windowEnd - windowStart + 1, 1).getValues();
+      scannedRows += windowValues.length;
+      windows++;
+
+      let i;
+      for (i = windowValues.length - 1; i >= 0 && processedRows < ANALYSIS_CLEAR_STATUS_MAX_DELETE_ROWS; i--) {
+        const status = normalizeText_(windowValues[i][0]);
+        if (!status) continue;
+
+        const isMatch =
+          (includeError && status.startsWith(ANALYSIS_STATUS_ERROR_PREFIX)) ||
+          selectedSet.has(status);
+        if (!isMatch) continue;
+
+        const rowNumber = windowStart + i;
+        sheet.deleteRow(rowNumber);
+        processedRows += 1;
+        state.deletedRows += 1;
+      }
+
+      if (i >= 0 && processedRows >= ANALYSIS_CLEAR_STATUS_MAX_DELETE_ROWS) {
+        cursorRow = windowStart + i;
+        break;
+      }
+      cursorRow = windowStart - 1;
+    }
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+
+  const done = cursorRow < 2;
+  state.cursorRow = cursorRow;
+  if (done) {
+    cache.remove(cacheKey);
+  } else {
+    cache.put(cacheKey, JSON.stringify(state), ANALYSIS_CLEAR_STATUS_JOB_CACHE_TTL_SEC);
+  }
+
+  return {
+    done: done,
+    deletedRows: state.deletedRows,
+    processedRows: processedRows,
+    scannedRows: scannedRows,
+    cursorRow: cursorRow
+  };
+}
+
+function getClearAnalysisStatusJobCacheKey_(jobId) {
+  return `${ANALYSIS_CLEAR_STATUS_JOB_CACHE_PREFIX}${jobId}`;
+}
+
+function clearAnalysisRowsByStatusSelection_(selectedValues) {
+  const sheet = getOrCreateAnalysisSheet_();
+  ensureResultSheetLayout_(sheet);
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    throw new Error('解析シートにデータがありません。');
+  }
+
+  const selected = Array.isArray(selectedValues)
+    ? selectedValues.map((value) => normalizeText_(value)).filter((value) => value)
+    : [];
+  if (selected.length === 0) {
+    throw new Error('ステータスが選択されていません。');
+  }
+
+  const header = sheet
+    .getRange(1, 1, 1, Math.max(RESULT_SHEET_HEADERS.length, sheet.getLastColumn()))
+    .getValues()[0];
+  const statusCol = header.indexOf('ステータス') + 1;
+  if (statusCol === 0) {
+    throw new Error('解析シートに「ステータス」列が見つかりません。');
+  }
+
+  const values = sheet.getRange(2, statusCol, lastRow - 1, 1).getValues();
+  const selectedSet = new Set(selected);
+  const includeError = selectedSet.has(ANALYSIS_CLEAR_ERROR_OPTION_VALUE);
+  if (includeError) selectedSet.delete(ANALYSIS_CLEAR_ERROR_OPTION_VALUE);
+
+  const rowsToDelete = [];
+  const breakdown = {};
+  for (let i = 0; i < values.length; i++) {
+    const status = normalizeText_(values[i][0]);
+    if (!status) continue;
+
+    let matchedKey = '';
+    if (includeError && status.startsWith(ANALYSIS_STATUS_ERROR_PREFIX)) {
+      matchedKey = ANALYSIS_CLEAR_ERROR_OPTION_LABEL;
+    } else if (selectedSet.has(status)) {
+      matchedKey = status;
+    }
+
+    if (matchedKey) {
+      rowsToDelete.push(i + 2);
+      breakdown[matchedKey] = (breakdown[matchedKey] || 0) + 1;
+    }
+  }
+
+  if (rowsToDelete.length === 0) {
+    SpreadsheetApp.getActiveSpreadsheet().toast('対象となる行はありませんでした。', '解析シートのクリア', 5);
+    return { deletedCount: 0, breakdown: breakdown };
+  }
+
+  rowsToDelete.sort((a, b) => b - a);
+  let blockEnd = rowsToDelete[0];
+  let blockStart = blockEnd;
+  for (let idx = 1; idx < rowsToDelete.length; idx++) {
+    const row = rowsToDelete[idx];
+    if (row === blockStart - 1) {
+      blockStart = row;
+      continue;
+    }
+    sheet.deleteRows(blockStart, blockEnd - blockStart + 1);
+    blockEnd = row;
+    blockStart = row;
+  }
+  sheet.deleteRows(blockStart, blockEnd - blockStart + 1);
+
+  SpreadsheetApp.getActiveSpreadsheet().toast(
+    `削除しました: ${rowsToDelete.length}件`,
+    '解析シートのクリア',
+    5
+  );
+  return { deletedCount: rowsToDelete.length, breakdown: breakdown };
 }
 
 // ==================================================
