@@ -1398,6 +1398,7 @@ function buildClearAnalysisStatusDialogHtml_(options) {
 
       const startedAt = Date.now();
       let heartbeatTimer = null;
+      let waitLogTimer = null;
       let activeJobId = '';
       let totalRows = 0;
       let deletedRows = 0;
@@ -1408,11 +1409,40 @@ function buildClearAnalysisStatusDialogHtml_(options) {
         log.scrollTop = log.scrollHeight;
       }
 
+      function startWaitLog(label) {
+        const start = Date.now();
+        stopWaitLog();
+        waitLogTimer = setInterval(() => {
+          const sec = Math.floor((Date.now() - start) / 1000);
+          logLine(label + ' 応答待ち... ' + sec + '秒');
+        }, 5000);
+      }
+
+      function stopWaitLog() {
+        if (waitLogTimer) clearInterval(waitLogTimer);
+        waitLogTimer = null;
+      }
+
       function setBusy(busy) {
         btnSelectAll.disabled = busy;
         btnClearAll.disabled = busy;
         btnRun.disabled = busy;
         list.querySelectorAll('input[type="checkbox"]').forEach((el) => { el.disabled = busy; });
+      }
+
+      function ensureGoogleScriptRun_() {
+        try {
+          if (google && google.script && google.script.run) return true;
+        } catch (e) {
+          // ignore
+        }
+        stopHeartbeat();
+        stopWaitLog();
+        setBusy(false);
+        const message = 'google.script.run が利用できません（ダイアログを閉じて再度お試しください）';
+        setMsg('エラー: ' + message, false);
+        logLine('失敗: ' + message);
+        return false;
       }
 
       function setMsg(text, muted) {
@@ -1494,31 +1524,45 @@ function buildClearAnalysisStatusDialogHtml_(options) {
         logLine('実行開始');
         logLine('選択: ' + selected.join(', '));
         startHeartbeat('準備中...');
+        if (!ensureGoogleScriptRun_()) return;
+        logLine('サーバー呼び出し: startClearAnalysisStatusJob_');
+        startWaitLog('startClearAnalysisStatusJob_');
 
-        google.script.run
-          .withSuccessHandler((job) => {
-            stopHeartbeat();
-            if (!job || !job.jobId) {
+        try {
+          google.script.run
+            .withSuccessHandler((job) => {
+              stopHeartbeat();
+              stopWaitLog();
+              if (!job || !job.jobId) {
+                setBusy(false);
+                setMsg('対象となる行はありませんでした。', false);
+                logLine('対象0件のため終了');
+                return;
+              }
+              activeJobId = job.jobId;
+              totalRows = job.totalRows || 0;
+              deletedRows = 0;
+              logLine('削除ジョブ作成: ' + activeJobId);
+              logLine('削除対象: ' + totalRows + '行');
+              runStep();
+            })
+            .withFailureHandler((err) => {
+              stopHeartbeat();
+              stopWaitLog();
               setBusy(false);
-              setMsg('対象となる行はありませんでした。', false);
-              logLine('対象0件のため終了');
-              return;
-            }
-            activeJobId = job.jobId;
-            totalRows = job.totalRows || 0;
-            deletedRows = 0;
-            logLine('削除ジョブ作成: ' + activeJobId);
-            logLine('削除対象: ' + totalRows + '行');
-            runStep();
-          })
-          .withFailureHandler((err) => {
-            stopHeartbeat();
-            setBusy(false);
-            const message = err && err.message ? err.message : String(err);
-            setMsg('エラー: ' + message, false);
-            logLine('失敗: ' + message);
-          })
-          .startClearAnalysisStatusJob_(selected);
+              const message = err && err.message ? err.message : String(err);
+              setMsg('エラー: ' + message, false);
+              logLine('失敗: ' + message);
+            })
+            .startClearAnalysisStatusJob_(selected);
+        } catch (e) {
+          stopHeartbeat();
+          stopWaitLog();
+          setBusy(false);
+          const message = e && e.message ? e.message : String(e);
+          setMsg('エラー: ' + message, false);
+          logLine('失敗: ' + message);
+        }
       });
 
       function runStep() {
@@ -1533,92 +1577,148 @@ function buildClearAnalysisStatusDialogHtml_(options) {
           : ('削除中... ' + deletedRows + '行');
         setMsg(prefix, true);
         startHeartbeat(prefix);
+        if (!ensureGoogleScriptRun_()) return;
+        logLine('サーバー呼び出し: processClearAnalysisStatusJob_');
+        startWaitLog('processClearAnalysisStatusJob_');
 
-        google.script.run
-          .withSuccessHandler((res) => {
-            stopHeartbeat();
-            if (!res) {
+        try {
+          google.script.run
+            .withSuccessHandler((res) => {
+              stopHeartbeat();
+              stopWaitLog();
+              if (!res) {
+                setBusy(false);
+                setMsg('エラー: サーバー応答が不正です。', false);
+                logLine('失敗: 不正な応答');
+                return;
+              }
+
+              deletedRows = typeof res.deletedRows === 'number' ? res.deletedRows : deletedRows;
+              const processedRows = typeof res.processedRows === 'number' ? res.processedRows : 0;
+              const scannedRows = typeof res.scannedRows === 'number' ? res.scannedRows : 0;
+              const cursorRow = typeof res.cursorRow === 'number' ? res.cursorRow : 0;
+
+              const totalPart = totalRows > 0 ? ('/' + totalRows) : '';
+              logLine('削除ステップ完了: +' + processedRows + '行（累計 ' + deletedRows + totalPart + '）');
+              if (scannedRows > 0) {
+                logLine('スキャン: ' + scannedRows + '行（次の走査行: ' + cursorRow + '）');
+              }
+
+              if (res.done) {
+                setMsg('完了しました。', false);
+                logLine('完了');
+                google.script.host.close();
+                return;
+              }
+
+              const nextMsg = totalRows > 0
+                ? ('削除中... ' + deletedRows + '/' + totalRows + '行（次の走査行: ' + cursorRow + '）')
+                : ('削除中... ' + deletedRows + '行（次の走査行: ' + cursorRow + '）');
+              setMsg(nextMsg, true);
+              setTimeout(runStep, 50);
+            })
+            .withFailureHandler((err) => {
+              stopHeartbeat();
+              stopWaitLog();
               setBusy(false);
-              setMsg('エラー: サーバー応答が不正です。', false);
-              logLine('失敗: 不正な応答');
-              return;
-            }
-
-            deletedRows = typeof res.deletedRows === 'number' ? res.deletedRows : deletedRows;
-            const processedRows = typeof res.processedRows === 'number' ? res.processedRows : 0;
-            const scannedRows = typeof res.scannedRows === 'number' ? res.scannedRows : 0;
-            const cursorRow = typeof res.cursorRow === 'number' ? res.cursorRow : 0;
-
-            const totalPart = totalRows > 0 ? ('/' + totalRows) : '';
-            logLine('削除ステップ完了: +' + processedRows + '行（累計 ' + deletedRows + totalPart + '）');
-            if (scannedRows > 0) {
-              logLine('スキャン: ' + scannedRows + '行（次の走査行: ' + cursorRow + '）');
-            }
-
-            if (res.done) {
-              setMsg('完了しました。', false);
-              logLine('完了');
-              google.script.host.close();
-              return;
-            }
-
-            const nextMsg = totalRows > 0
-              ? ('削除中... ' + deletedRows + '/' + totalRows + '行（次の走査行: ' + cursorRow + '）')
-              : ('削除中... ' + deletedRows + '行（次の走査行: ' + cursorRow + '）');
-            setMsg(nextMsg, true);
-            setTimeout(runStep, 50);
-          })
-          .withFailureHandler((err) => {
-            stopHeartbeat();
-            setBusy(false);
-            const message = err && err.message ? err.message : String(err);
-            setMsg('エラー: ' + message, false);
-            logLine('失敗: ' + message);
-          })
-          .processClearAnalysisStatusJob_(activeJobId);
+              const message = err && err.message ? err.message : String(err);
+              setMsg('エラー: ' + message, false);
+              logLine('失敗: ' + message);
+            })
+            .processClearAnalysisStatusJob_(activeJobId);
+        } catch (e) {
+          stopHeartbeat();
+          stopWaitLog();
+          setBusy(false);
+          const message = e && e.message ? e.message : String(e);
+          setMsg('エラー: ' + message, false);
+          logLine('失敗: ' + message);
+        }
       }
 
       render();
       setMsg('', true);
       logLine('ダイアログを開きました');
+      // 疎通確認（google.script.run が有効か／サーバーが応答するか）をログに出す
+      (function pingServer_() {
+        if (!ensureGoogleScriptRun_()) return;
+        const start = Date.now();
+        logLine('サーバー疎通確認中...');
+        startWaitLog('pingClearAnalysisStatusDialog_');
+        try {
+          google.script.run
+            .withSuccessHandler((res) => {
+              stopWaitLog();
+              const ms = Date.now() - start;
+              if (res && res.ok) {
+                logLine('サーバー疎通: OK (' + ms + 'ms)');
+              } else {
+                logLine('サーバー疎通: 応答あり (' + ms + 'ms)');
+              }
+            })
+            .withFailureHandler((err) => {
+              stopWaitLog();
+              const message = err && err.message ? err.message : String(err);
+              logLine('サーバー疎通: NG (' + message + ')');
+            })
+            .pingClearAnalysisStatusDialog_();
+        } catch (e) {
+          stopWaitLog();
+          const message = e && e.message ? e.message : String(e);
+          logLine('サーバー疎通: NG (' + message + ')');
+        }
+      })();
     </script>
   </body>
 </html>
   `;
 }
 
+function pingClearAnalysisStatusDialog_() {
+  return { ok: true, now: Date.now() };
+}
+
 function startClearAnalysisStatusJob_(selectedValues) {
-  const sheet = getOrCreateAnalysisSheet_();
-  const lastRow = sheet.getLastRow();
-  if (lastRow < 2) throw new Error('解析シートにデータがありません。');
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(5 * 1000)) {
+    throw new Error('スプレッドシートが他の処理中です。しばらくして再度お試しください。');
+  }
 
-  const selected = Array.isArray(selectedValues)
-    ? selectedValues.map((value) => normalizeText_(value)).filter((value) => value)
-    : [];
-  if (selected.length === 0) throw new Error('ステータスが選択されていません。');
+  try {
+    const sheet = getOrCreateAnalysisSheet_();
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) throw new Error('解析シートにデータがありません。');
 
-  const header = sheet
-    .getRange(1, 1, 1, Math.max(RESULT_SHEET_HEADERS.length, sheet.getLastColumn()))
-    .getValues()[0];
-  const statusCol = header.indexOf('ステータス') + 1;
-  if (statusCol === 0) throw new Error('解析シートに「ステータス」列が見つかりません。');
+    const selected = Array.isArray(selectedValues)
+      ? selectedValues.map((value) => normalizeText_(value)).filter((value) => value)
+      : [];
+    if (selected.length === 0) throw new Error('ステータスが選択されていません。');
 
-  const jobId = Utilities.getUuid();
-  const includeError = selected.includes(ANALYSIS_CLEAR_ERROR_OPTION_VALUE);
-  const state = {
-    selected: selected,
-    includeError: includeError,
-    statusCol: statusCol,
-    cursorRow: lastRow,
-    deletedRows: 0,
-    createdAt: Date.now()
-  };
-  CacheService.getUserCache().put(
-    getClearAnalysisStatusJobCacheKey_(jobId),
-    JSON.stringify(state),
-    ANALYSIS_CLEAR_STATUS_JOB_CACHE_TTL_SEC
-  );
-  return { jobId: jobId, totalRows: 0 };
+    const header = sheet
+      .getRange(1, 1, 1, Math.max(RESULT_SHEET_HEADERS.length, sheet.getLastColumn()))
+      .getValues()[0];
+    const statusCol = header.indexOf('ステータス') + 1;
+    if (statusCol === 0) throw new Error('解析シートに「ステータス」列が見つかりません。');
+
+    const jobId = Utilities.getUuid();
+    const includeError = selected.includes(ANALYSIS_CLEAR_ERROR_OPTION_VALUE);
+    const state = {
+      selected: selected,
+      includeError: includeError,
+      statusCol: statusCol,
+      cursorRow: lastRow,
+      deletedRows: 0,
+      createdAt: Date.now()
+    };
+    CacheService.getUserCache().put(
+      getClearAnalysisStatusJobCacheKey_(jobId),
+      JSON.stringify(state),
+      ANALYSIS_CLEAR_STATUS_JOB_CACHE_TTL_SEC
+    );
+    return { jobId: jobId, totalRows: 0 };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function processClearAnalysisStatusJob_(jobId) {
