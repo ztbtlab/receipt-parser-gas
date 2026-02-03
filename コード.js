@@ -1525,8 +1525,8 @@ function buildClearAnalysisStatusDialogHtml_(options) {
         logLine('選択: ' + selected.join(', '));
         startHeartbeat('準備中...');
         if (!ensureGoogleScriptRun_()) return;
-        logLine('サーバー呼び出し: startClearAnalysisStatusJob_');
-        startWaitLog('startClearAnalysisStatusJob_');
+        logLine('サーバー呼び出し: startClearAnalysisStatusJob');
+        startWaitLog('startClearAnalysisStatusJob');
 
         try {
           google.script.run
@@ -1554,7 +1554,7 @@ function buildClearAnalysisStatusDialogHtml_(options) {
               setMsg('エラー: ' + message, false);
               logLine('失敗: ' + message);
             })
-            .startClearAnalysisStatusJob_(selected);
+            .startClearAnalysisStatusJob(selected);
         } catch (e) {
           stopHeartbeat();
           stopWaitLog();
@@ -1578,8 +1578,8 @@ function buildClearAnalysisStatusDialogHtml_(options) {
         setMsg(prefix, true);
         startHeartbeat(prefix);
         if (!ensureGoogleScriptRun_()) return;
-        logLine('サーバー呼び出し: processClearAnalysisStatusJob_');
-        startWaitLog('processClearAnalysisStatusJob_');
+        logLine('サーバー呼び出し: processClearAnalysisStatusJob');
+        startWaitLog('processClearAnalysisStatusJob');
 
         try {
           google.script.run
@@ -1625,7 +1625,7 @@ function buildClearAnalysisStatusDialogHtml_(options) {
               setMsg('エラー: ' + message, false);
               logLine('失敗: ' + message);
             })
-            .processClearAnalysisStatusJob_(activeJobId);
+            .processClearAnalysisStatusJob(activeJobId);
         } catch (e) {
           stopHeartbeat();
           stopWaitLog();
@@ -1644,7 +1644,7 @@ function buildClearAnalysisStatusDialogHtml_(options) {
         if (!ensureGoogleScriptRun_()) return;
         const start = Date.now();
         logLine('サーバー疎通確認中...');
-        startWaitLog('pingClearAnalysisStatusDialog_');
+        startWaitLog('pingClearAnalysisStatusDialog');
         try {
           google.script.run
             .withSuccessHandler((res) => {
@@ -1661,7 +1661,7 @@ function buildClearAnalysisStatusDialogHtml_(options) {
               const message = err && err.message ? err.message : String(err);
               logLine('サーバー疎通: NG (' + message + ')');
             })
-            .pingClearAnalysisStatusDialog_();
+            .pingClearAnalysisStatusDialog();
         } catch (e) {
           stopWaitLog();
           const message = e && e.message ? e.message : String(e);
@@ -1674,8 +1674,16 @@ function buildClearAnalysisStatusDialogHtml_(options) {
   `;
 }
 
+function pingClearAnalysisStatusDialog() {
+  return pingClearAnalysisStatusDialog_();
+}
+
 function pingClearAnalysisStatusDialog_() {
   return { ok: true, now: Date.now() };
+}
+
+function startClearAnalysisStatusJob(selectedValues) {
+  return startClearAnalysisStatusJob_(selectedValues);
 }
 
 function startClearAnalysisStatusJob_(selectedValues) {
@@ -1719,6 +1727,10 @@ function startClearAnalysisStatusJob_(selectedValues) {
   } finally {
     lock.releaseLock();
   }
+}
+
+function processClearAnalysisStatusJob(jobId) {
+  return processClearAnalysisStatusJob_(jobId);
 }
 
 function processClearAnalysisStatusJob_(jobId) {
