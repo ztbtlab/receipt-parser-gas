@@ -36,6 +36,15 @@ const MF_TAX_CATEGORY_STANDARD = '課税仕入 10%';
 const MF_TAX_CATEGORY_REDUCED = '課税仕入 8%';
 const MF_CARD_SUB_ACCOUNT = '三井住友ゴールドカード';
 const MF_PROCESSED_PREFIX = 'CSV済';
+const MF_TRADE_PARTNER_SHEET_NAME = '取引先一覧';
+const MF_TRADE_PARTNER_HEADERS = [
+  'コード',
+  '取引先名',
+  '検索キー',
+  '表示設定',
+  '登録番号',
+  '法人番号'
+];
 const MF_CSV_HEADERS = [
   '取引No',
   '取引日',
@@ -120,6 +129,7 @@ function onOpen() {
     .addItem('3. フォルダ移動', 'moveFilesToSpecifiedFolder')
     .addItem('4. マネフォ用解析', 'analyzeMoneyForward')
     .addItem('5. マネフォCSVダウンロード', 'downloadMoneyForwardCsv')
+    .addItem('6. 取引先CSVダウンロード', 'downloadTradePartnersCsv')
     .addSeparator()
     .addItem('画像プレビューを開く', 'showImageSidebar')
     .addItem('ヘルプを見る', 'showHelp')
@@ -1954,17 +1964,21 @@ function mergeReceiptData_(analysis, nameInfo, file) {
 
 function getTradePartnerMap_(ui) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let sheet = ss.getSheetByName('取引先一覧');
+  let sheet = ss.getSheetByName(MF_TRADE_PARTNER_SHEET_NAME);
 
   if (!sheet) {
-    sheet = ss.insertSheet('取引先一覧');
-    sheet.getRange('A1:B1').setValues([['登録番号', '取引先名']]);
-    sheet.getRange('A1:B1').setBackground('#d9ead3').setFontWeight('bold');
-    sheet.setColumnWidth(1, 180);
-    sheet.setColumnWidth(2, 240);
-    ui.alert('「取引先一覧」シートを作成しました。\nA列に登録番号、B列に取引先名を入力してください。');
+    sheet = ss.insertSheet(MF_TRADE_PARTNER_SHEET_NAME);
+    initializeTradePartnerSheet_(sheet);
+    ui.alert(
+      '「取引先一覧」シートを作成しました。\n' +
+      'マネーフォワードの取引先インポート仕様に合わせています。\n' +
+      '- B列: 取引先名（必須）\n' +
+      '- E列: 登録番号（T+13桁）'
+    );
     return {};
   }
+
+  ensureTradePartnerSheetLayout_(sheet, ui);
 
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return {};
@@ -1988,6 +2002,109 @@ function getTradePartnerMap_(ui) {
     }
   }
   return map;
+}
+
+function initializeTradePartnerSheet_(sheet) {
+  sheet.getRange(1, 1, 1, MF_TRADE_PARTNER_HEADERS.length).setValues([MF_TRADE_PARTNER_HEADERS]);
+  sheet.getRange(1, 1, 1, MF_TRADE_PARTNER_HEADERS.length).setBackground('#d9ead3').setFontWeight('bold');
+  sheet.setFrozenRows(1);
+  sheet.setColumnWidth(1, 120); // コード
+  sheet.setColumnWidth(2, 240); // 取引先名
+  sheet.setColumnWidth(3, 200); // 検索キー
+  sheet.setColumnWidth(4, 110); // 表示設定
+  sheet.setColumnWidth(5, 180); // 登録番号
+  sheet.setColumnWidth(6, 160); // 法人番号
+}
+
+function ensureTradePartnerSheetLayout_(sheet, ui) {
+  const lastColumn = sheet.getLastColumn();
+  const headerWidth = Math.max(MF_TRADE_PARTNER_HEADERS.length, lastColumn || 0, 2);
+  const header = sheet.getRange(1, 1, 1, headerWidth).getValues()[0];
+  const a1 = normalizeText_(header[0]);
+  const b1 = normalizeText_(header[1]);
+
+  // 空シートの場合はヘッダーを初期化
+  if (!a1 && !b1 && sheet.getLastRow() === 0) {
+    initializeTradePartnerSheet_(sheet);
+    return;
+  }
+
+  // 旧フォーマット（A:登録番号 / B:取引先名）からの移行
+  if (a1 === '登録番号' && b1 === '取引先名') {
+    const needColumns = MF_TRADE_PARTNER_HEADERS.length;
+    const currentColumns = Math.max(lastColumn || 0, 2);
+    if (currentColumns < needColumns) {
+      sheet.insertColumnsAfter(currentColumns, needColumns - currentColumns);
+    }
+
+    const lastRow = sheet.getLastRow();
+    if (lastRow >= 2) {
+      const invoiceValues = sheet.getRange(2, 1, lastRow - 1, 1).getValues();
+      sheet.getRange(2, 5, lastRow - 1, 1).setValues(invoiceValues);
+      sheet.getRange(2, 1, lastRow - 1, 1).clearContent();
+    }
+
+    initializeTradePartnerSheet_(sheet);
+    if (ui) {
+      ui.alert(
+        '「取引先一覧」シートを旧フォーマット（登録番号/取引先名の2列）から移行しました。\n' +
+        '登録番号はE列、取引先名はB列を使用してください。'
+      );
+    }
+    return;
+  }
+
+  // 既にマネフォ仕様のヘッダーなら、見た目だけ整える
+  const isMfHeader =
+    normalizeText_(header[0]) === MF_TRADE_PARTNER_HEADERS[0] &&
+    normalizeText_(header[1]) === MF_TRADE_PARTNER_HEADERS[1] &&
+    normalizeText_(header[2]) === MF_TRADE_PARTNER_HEADERS[2] &&
+    normalizeText_(header[3]) === MF_TRADE_PARTNER_HEADERS[3] &&
+    normalizeText_(header[4]) === MF_TRADE_PARTNER_HEADERS[4] &&
+    normalizeText_(header[5]) === MF_TRADE_PARTNER_HEADERS[5];
+  if (isMfHeader) {
+    initializeTradePartnerSheet_(sheet);
+    return;
+  }
+}
+
+function buildTradePartnerFilename_() {
+  const now = new Date();
+  const stamp = Utilities.formatDate(now, Session.getScriptTimeZone(), 'yyyyMMdd_HHmm');
+  return `mf_trade_partners_${stamp}.csv`;
+}
+
+function downloadTradePartnersCsv() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(MF_TRADE_PARTNER_SHEET_NAME);
+
+  if (!sheet) {
+    sheet = ss.insertSheet(MF_TRADE_PARTNER_SHEET_NAME);
+    initializeTradePartnerSheet_(sheet);
+    ui.alert('「取引先一覧」シートが見つからなかったため、新規作成しました。');
+  }
+
+  ensureTradePartnerSheetLayout_(sheet, ui);
+
+  const lastRow = sheet.getLastRow();
+  const headers = MF_TRADE_PARTNER_HEADERS;
+  const rows = lastRow >= 2
+    ? sheet.getRange(2, 1, lastRow - 1, headers.length).getValues()
+    : [];
+
+  const missingNames = rows.filter((row) => isBlankCell_(row[1])).length;
+  if (missingNames > 0) {
+    ui.alert(
+      `取引先名が空欄の行が ${missingNames} 件あります。\n` +
+      'マネーフォワードの仕様では「取引先名」は必須です。\n' +
+      '空欄のままでも全行をCSV出力します。'
+    );
+  }
+
+  const csvContent = buildCsvContent_(headers, rows);
+  const filename = buildTradePartnerFilename_();
+  showDownloadDialog_(filename, csvContent);
 }
 
 function resolvePartnerName_(invoiceNumber, partnerMap, vendorName) {
