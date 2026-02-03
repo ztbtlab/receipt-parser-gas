@@ -1441,7 +1441,7 @@ function buildClearAnalysisStatusDialogHtml_(options) {
         setBusy(true);
 
         google.script.run
-          .withSuccessHandler(() => {
+      .withSuccessHandler(() => {
             google.script.host.close();
           })
           .withFailureHandler((err) => {
@@ -1459,22 +1459,19 @@ function buildClearAnalysisStatusDialogHtml_(options) {
 }
 
 function clearAnalysisRowsByStatusSelection_(selectedValues) {
-  const ui = SpreadsheetApp.getUi();
   const sheet = getOrCreateAnalysisSheet_();
   ensureResultSheetLayout_(sheet);
 
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) {
-    ui.alert('解析シートにデータがありません。');
-    return;
+    throw new Error('解析シートにデータがありません。');
   }
 
   const selected = Array.isArray(selectedValues)
     ? selectedValues.map((value) => normalizeText_(value)).filter((value) => value)
     : [];
   if (selected.length === 0) {
-    ui.alert('ステータスが選択されていません。');
-    return;
+    throw new Error('ステータスが選択されていません。');
   }
 
   const header = sheet
@@ -1482,8 +1479,7 @@ function clearAnalysisRowsByStatusSelection_(selectedValues) {
     .getValues()[0];
   const statusCol = header.indexOf('ステータス') + 1;
   if (statusCol === 0) {
-    ui.alert('解析シートに「ステータス」列が見つかりません。');
-    return;
+    throw new Error('解析シートに「ステータス」列が見つかりません。');
   }
 
   const values = sheet.getRange(2, statusCol, lastRow - 1, 1).getValues();
@@ -1511,8 +1507,8 @@ function clearAnalysisRowsByStatusSelection_(selectedValues) {
   }
 
   if (rowsToDelete.length === 0) {
-    ui.alert('対象となる行はありませんでした。');
-    return;
+    SpreadsheetApp.getActiveSpreadsheet().toast('対象となる行はありませんでした。', '解析シートのクリア', 5);
+    return { deletedCount: 0, breakdown: breakdown };
   }
 
   rowsToDelete.sort((a, b) => b - a);
@@ -1530,16 +1526,12 @@ function clearAnalysisRowsByStatusSelection_(selectedValues) {
   }
   sheet.deleteRows(blockStart, blockEnd - blockStart + 1);
 
-  const summaryLines = [`削除しました: ${rowsToDelete.length}件`];
-  const keys = Object.keys(breakdown);
-  keys.sort();
-  if (keys.length > 0) {
-    summaryLines.push('', '内訳:');
-    for (const key of keys) {
-      summaryLines.push(`- ${key}: ${breakdown[key]}件`);
-    }
-  }
-  ui.alert(summaryLines.join('\n'));
+  SpreadsheetApp.getActiveSpreadsheet().toast(
+    `削除しました: ${rowsToDelete.length}件`,
+    '解析シートのクリア',
+    5
+  );
+  return { deletedCount: rowsToDelete.length, breakdown: breakdown };
 }
 
 // ==================================================
