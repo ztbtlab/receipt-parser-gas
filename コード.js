@@ -45,6 +45,9 @@ const MF_TRADE_PARTNER_HEADERS = [
   '登録番号',
   '法人番号'
 ];
+const ANALYSIS_STATUS_ERROR_PREFIX = 'エラー:';
+const ANALYSIS_CLEAR_ERROR_OPTION_VALUE = '__ERROR_PREFIX__';
+const ANALYSIS_CLEAR_ERROR_OPTION_LABEL = 'エラー（エラー:〜）';
 const MF_CSV_HEADERS = [
   '取引No',
   '取引日',
@@ -1215,10 +1218,328 @@ function clearAnalysisSheet() {
     return;
   }
 
-  const range = sheet.getRange(2, 1, lastRow - 1, RESULT_SHEET_HEADERS.length);
-  range.clearContent();
-  range.setBackground(null);
-  ui.alert('解析シートのデータをクリアしました。');
+  const options = getClearAnalysisStatusOptions_(sheet);
+  if (options.length === 0) {
+    ui.alert('クリア対象のステータスがありません。');
+    return;
+  }
+
+  const html = HtmlService.createHtmlOutput(buildClearAnalysisStatusDialogHtml_(options))
+    .setWidth(520)
+    .setHeight(620);
+  ui.showModalDialog(html, '解析シートのクリア');
+}
+
+function getClearAnalysisStatusOptions_(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+
+  const header = sheet
+    .getRange(1, 1, 1, Math.max(RESULT_SHEET_HEADERS.length, sheet.getLastColumn()))
+    .getValues()[0];
+  const statusCol = header.indexOf('ステータス') + 1;
+  if (statusCol === 0) return [];
+
+  const values = sheet.getRange(2, statusCol, lastRow - 1, 1).getValues();
+  const unique = new Set();
+  let hasError = false;
+  for (const [value] of values) {
+    const status = normalizeText_(value);
+    if (!status) continue;
+    if (status.startsWith(ANALYSIS_STATUS_ERROR_PREFIX)) {
+      hasError = true;
+      continue;
+    }
+    unique.add(status);
+  }
+
+  const options = [];
+  if (hasError) {
+    options.push({
+      value: ANALYSIS_CLEAR_ERROR_OPTION_VALUE,
+      label: ANALYSIS_CLEAR_ERROR_OPTION_LABEL
+    });
+  }
+
+  const sorted = Array.from(unique);
+  sorted.sort();
+  for (const status of sorted) {
+    options.push({ value: status, label: status });
+  }
+  return options;
+}
+
+function buildClearAnalysisStatusDialogHtml_(options) {
+  const optionsJson = JSON.stringify(options || []);
+  return `
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      html,
+      body {
+        font-family: "Noto Sans JP", Arial, sans-serif;
+        margin: 0;
+        padding: 0;
+      }
+      .wrap {
+        padding: 16px;
+      }
+      .title {
+        font-size: 14px;
+        font-weight: 700;
+        margin: 0 0 8px;
+      }
+      .desc {
+        color: #555;
+        font-size: 12px;
+        line-height: 1.5;
+        margin: 0 0 12px;
+      }
+      .list {
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        padding: 10px;
+        max-height: 420px;
+        overflow: auto;
+      }
+      .item {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+        padding: 6px 0;
+      }
+      .item label {
+        cursor: pointer;
+        font-size: 13px;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      button {
+        background: #f3f3f3;
+        border: 1px solid #d0d0d0;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 12px;
+        padding: 8px 12px;
+      }
+      button.primary {
+        background: #1a73e8;
+        border-color: #1a73e8;
+        color: #fff;
+      }
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.6;
+      }
+      .msg {
+        color: #666;
+        font-size: 12px;
+        margin-top: 10px;
+        min-height: 16px;
+      }
+      .warn {
+        color: #b45309;
+      }
+      .muted {
+        color: #888;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="title">削除するステータスを選択</div>
+      <p class="desc">
+        チェックしたステータスの行を削除し、行を詰めます。<span class="warn">削除は元に戻せません。</span>
+      </p>
+      <div id="list" class="list"></div>
+      <div class="actions">
+        <button type="button" id="selectAll">全選択</button>
+        <button type="button" id="clearAll">全解除</button>
+        <button type="button" id="run" class="primary">実行</button>
+        <button type="button" id="cancel">キャンセル</button>
+      </div>
+      <div id="msg" class="msg muted"></div>
+    </div>
+
+    <script>
+      const options = ${optionsJson};
+
+      const list = document.getElementById('list');
+      const msg = document.getElementById('msg');
+      const btnSelectAll = document.getElementById('selectAll');
+      const btnClearAll = document.getElementById('clearAll');
+      const btnRun = document.getElementById('run');
+      const btnCancel = document.getElementById('cancel');
+
+      function setBusy(busy) {
+        btnSelectAll.disabled = busy;
+        btnClearAll.disabled = busy;
+        btnRun.disabled = busy;
+        btnCancel.disabled = busy;
+      }
+
+      function render() {
+        list.innerHTML = '';
+        if (!options || options.length === 0) {
+          const p = document.createElement('div');
+          p.className = 'muted';
+          p.textContent = 'ステータスが見つかりません。';
+          list.appendChild(p);
+          btnRun.disabled = true;
+          return;
+        }
+
+        options.forEach((opt, idx) => {
+          const id = 'status_' + idx;
+          const row = document.createElement('div');
+          row.className = 'item';
+
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox';
+          checkbox.id = id;
+          checkbox.value = opt.value;
+
+          const label = document.createElement('label');
+          label.htmlFor = id;
+          label.textContent = opt.label;
+
+          row.appendChild(checkbox);
+          row.appendChild(label);
+          list.appendChild(row);
+        });
+      }
+
+      function getSelected() {
+        return Array.from(list.querySelectorAll('input[type=\"checkbox\"]:checked')).map((el) => el.value);
+      }
+
+      btnSelectAll.addEventListener('click', () => {
+        list.querySelectorAll('input[type=\"checkbox\"]').forEach((el) => { el.checked = true; });
+      });
+
+      btnClearAll.addEventListener('click', () => {
+        list.querySelectorAll('input[type=\"checkbox\"]').forEach((el) => { el.checked = false; });
+      });
+
+      btnCancel.addEventListener('click', () => {
+        google.script.host.close();
+      });
+
+      btnRun.addEventListener('click', () => {
+        const selected = getSelected();
+        if (selected.length === 0) {
+          msg.textContent = 'ステータスを1つ以上選択してください。';
+          return;
+        }
+        msg.textContent = '処理中...';
+        setBusy(true);
+
+        google.script.run
+          .withSuccessHandler(() => {
+            google.script.host.close();
+          })
+          .withFailureHandler((err) => {
+            setBusy(false);
+            msg.textContent = 'エラー: ' + (err && err.message ? err.message : String(err));
+          })
+          .clearAnalysisRowsByStatusSelection_(selected);
+      });
+
+      render();
+    </script>
+  </body>
+</html>
+  `;
+}
+
+function clearAnalysisRowsByStatusSelection_(selectedValues) {
+  const ui = SpreadsheetApp.getUi();
+  const sheet = getOrCreateAnalysisSheet_();
+  ensureResultSheetLayout_(sheet);
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    ui.alert('解析シートにデータがありません。');
+    return;
+  }
+
+  const selected = Array.isArray(selectedValues)
+    ? selectedValues.map((value) => normalizeText_(value)).filter((value) => value)
+    : [];
+  if (selected.length === 0) {
+    ui.alert('ステータスが選択されていません。');
+    return;
+  }
+
+  const header = sheet
+    .getRange(1, 1, 1, Math.max(RESULT_SHEET_HEADERS.length, sheet.getLastColumn()))
+    .getValues()[0];
+  const statusCol = header.indexOf('ステータス') + 1;
+  if (statusCol === 0) {
+    ui.alert('解析シートに「ステータス」列が見つかりません。');
+    return;
+  }
+
+  const values = sheet.getRange(2, statusCol, lastRow - 1, 1).getValues();
+  const selectedSet = new Set(selected);
+  const includeError = selectedSet.has(ANALYSIS_CLEAR_ERROR_OPTION_VALUE);
+  if (includeError) selectedSet.delete(ANALYSIS_CLEAR_ERROR_OPTION_VALUE);
+
+  const rowsToDelete = [];
+  const breakdown = {};
+  for (let i = 0; i < values.length; i++) {
+    const status = normalizeText_(values[i][0]);
+    if (!status) continue;
+
+    let matchedKey = '';
+    if (includeError && status.startsWith(ANALYSIS_STATUS_ERROR_PREFIX)) {
+      matchedKey = ANALYSIS_CLEAR_ERROR_OPTION_LABEL;
+    } else if (selectedSet.has(status)) {
+      matchedKey = status;
+    }
+
+    if (matchedKey) {
+      rowsToDelete.push(i + 2);
+      breakdown[matchedKey] = (breakdown[matchedKey] || 0) + 1;
+    }
+  }
+
+  if (rowsToDelete.length === 0) {
+    ui.alert('対象となる行はありませんでした。');
+    return;
+  }
+
+  rowsToDelete.sort((a, b) => b - a);
+  let blockEnd = rowsToDelete[0];
+  let blockStart = blockEnd;
+  for (let idx = 1; idx < rowsToDelete.length; idx++) {
+    const row = rowsToDelete[idx];
+    if (row === blockStart - 1) {
+      blockStart = row;
+      continue;
+    }
+    sheet.deleteRows(blockStart, blockEnd - blockStart + 1);
+    blockEnd = row;
+    blockStart = row;
+  }
+  sheet.deleteRows(blockStart, blockEnd - blockStart + 1);
+
+  const summaryLines = [`削除しました: ${rowsToDelete.length}件`];
+  const keys = Object.keys(breakdown);
+  keys.sort();
+  if (keys.length > 0) {
+    summaryLines.push('', '内訳:');
+    for (const key of keys) {
+      summaryLines.push(`- ${key}: ${breakdown[key]}件`);
+    }
+  }
+  ui.alert(summaryLines.join('\n'));
 }
 
 // ==================================================
