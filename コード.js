@@ -127,9 +127,10 @@ function onOpen() {
     .addItem('解析シートをクリア', 'clearAnalysisSheet')
     .addItem('2. ファイル名反映', 'applyRenames')
     .addItem('3. フォルダ移動', 'moveFilesToSpecifiedFolder')
-    .addItem('4. マネフォ用解析', 'analyzeMoneyForward')
-    .addItem('5. マネフォCSVダウンロード', 'downloadMoneyForwardCsv')
-    .addItem('6. 取引先CSVダウンロード', 'downloadTradePartnersCsv')
+    .addItem('4. 取引先一覧更新', 'updateTradePartnersFromAnalysis')
+    .addItem('5. マネフォ用解析', 'analyzeMoneyForward')
+    .addItem('6. マネフォCSVダウンロード', 'downloadMoneyForwardCsv')
+    .addItem('7. 取引先CSVダウンロード', 'downloadTradePartnersCsv')
     .addSeparator()
     .addItem('画像プレビューを開く', 'showImageSidebar')
     .addItem('ヘルプを見る', 'showHelp')
@@ -2105,6 +2106,102 @@ function downloadTradePartnersCsv() {
   const csvContent = buildCsvContent_(headers, rows);
   const filename = buildTradePartnerFilename_();
   showDownloadDialog_(filename, csvContent);
+}
+
+function updateTradePartnersFromAnalysis() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const analysisSheet = getOrCreateAnalysisSheet_();
+  ensureResultSheetLayout_(analysisSheet);
+
+  const lastRow = analysisSheet.getLastRow();
+  if (lastRow < 2) {
+    ui.alert('解析シートにデータがありません。');
+    return;
+  }
+
+  const header = analysisSheet
+    .getRange(1, 1, 1, Math.max(RESULT_SHEET_HEADERS.length, analysisSheet.getLastColumn()))
+    .getValues()[0];
+  const vendorIndex = header.indexOf('取引先');
+  const invoiceIndex = header.indexOf('インボイス番号');
+
+  if (vendorIndex === -1 || invoiceIndex === -1) {
+    ui.alert('解析シートに「取引先」「インボイス番号」の列が見つかりません。');
+    return;
+  }
+
+  let partnerSheet = ss.getSheetByName(MF_TRADE_PARTNER_SHEET_NAME);
+  if (!partnerSheet) {
+    partnerSheet = ss.insertSheet(MF_TRADE_PARTNER_SHEET_NAME);
+    initializeTradePartnerSheet_(partnerSheet);
+  }
+  ensureTradePartnerSheetLayout_(partnerSheet, ui);
+
+  const existingInvoices = getTradePartnerInvoiceSet_(partnerSheet);
+  const seenInvoices = new Set();
+  const toAppend = [];
+  let skippedBlankInvoice = 0;
+  let skippedBlankName = 0;
+  let skippedExisting = 0;
+  let skippedDuplicate = 0;
+
+  const values = analysisSheet.getRange(2, 1, lastRow - 1, header.length).getValues();
+  for (const row of values) {
+    const invoiceNumber = normalizeInvoiceNumber_(row[invoiceIndex]);
+    if (!invoiceNumber) {
+      skippedBlankInvoice++;
+      continue;
+    }
+    if (seenInvoices.has(invoiceNumber)) {
+      skippedDuplicate++;
+      continue;
+    }
+    seenInvoices.add(invoiceNumber);
+
+    if (existingInvoices.has(invoiceNumber)) {
+      skippedExisting++;
+      continue;
+    }
+
+    const partnerName = normalizeText_(row[vendorIndex]);
+    if (!partnerName) {
+      skippedBlankName++;
+      continue;
+    }
+
+    toAppend.push(['', partnerName, '', '', invoiceNumber, '']);
+    existingInvoices.add(invoiceNumber);
+  }
+
+  if (toAppend.length > 0) {
+    const startRow = Math.max(partnerSheet.getLastRow() + 1, 2);
+    partnerSheet.getRange(startRow, 1, toAppend.length, MF_TRADE_PARTNER_HEADERS.length).setValues(toAppend);
+  }
+
+  ui.alert(
+    '取引先一覧を更新しました。\n' +
+    `追加: ${toAppend.length}\n` +
+    `既存（登録番号重複のためスキップ）: ${skippedExisting}\n` +
+    `登録番号なし（スキップ）: ${skippedBlankInvoice}\n` +
+    `取引先名なし（スキップ）: ${skippedBlankName}\n` +
+    `解析シート内の重複（スキップ）: ${skippedDuplicate}`
+  );
+}
+
+function getTradePartnerInvoiceSet_(sheet) {
+  const header = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const invoiceIndex = header.indexOf('登録番号');
+  const lastRow = sheet.getLastRow();
+  const set = new Set();
+  if (invoiceIndex === -1 || lastRow < 2) return set;
+
+  const values = sheet.getRange(2, invoiceIndex + 1, lastRow - 1, 1).getValues();
+  for (const [value] of values) {
+    const invoiceNumber = normalizeInvoiceNumber_(value);
+    if (invoiceNumber) set.add(invoiceNumber);
+  }
+  return set;
 }
 
 function resolvePartnerName_(invoiceNumber, partnerMap, vendorName) {
