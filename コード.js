@@ -49,9 +49,9 @@ const ANALYSIS_STATUS_ERROR_PREFIX = 'エラー:';
 const ANALYSIS_CLEAR_ERROR_OPTION_VALUE = '__ERROR_PREFIX__';
 const ANALYSIS_CLEAR_ERROR_OPTION_LABEL = 'エラー（エラー:〜）';
 const ANALYSIS_CLEAR_STATUS_JOB_CACHE_PREFIX = 'analysis_clear_status_job:';
-const ANALYSIS_CLEAR_STATUS_MAX_DELETE_ROWS = 100;
-const ANALYSIS_CLEAR_STATUS_BATCH_SEGMENTS = 3;
 const ANALYSIS_CLEAR_STATUS_JOB_CACHE_TTL_SEC = 60 * 60;
+const ANALYSIS_CLEAR_STATUS_SCAN_WINDOW_ROWS = 500;
+const ANALYSIS_CLEAR_STATUS_MAX_DELETE_ROWS = 50;
 const MF_CSV_HEADERS = [
   '取引No',
   '取引日',
@@ -1528,7 +1528,9 @@ function buildClearAnalysisStatusDialogHtml_(options) {
           return;
         }
 
-        const prefix = '削除中... ' + deletedRows + '/' + totalRows + '行';
+        const prefix = totalRows > 0
+          ? ('削除中... ' + deletedRows + '/' + totalRows + '行')
+          : ('削除中... ' + deletedRows + '行');
         setMsg(prefix, true);
         startHeartbeat(prefix);
 
@@ -1542,11 +1544,16 @@ function buildClearAnalysisStatusDialogHtml_(options) {
               return;
             }
 
-            deletedRows = res.deletedRows || deletedRows;
-            const processedRows = res.processedRows || 0;
-            const remainingSegments = res.remainingSegments || 0;
+            deletedRows = typeof res.deletedRows === 'number' ? res.deletedRows : deletedRows;
+            const processedRows = typeof res.processedRows === 'number' ? res.processedRows : 0;
+            const scannedRows = typeof res.scannedRows === 'number' ? res.scannedRows : 0;
+            const cursorRow = typeof res.cursorRow === 'number' ? res.cursorRow : 0;
 
-            logLine('削除ステップ完了: +' + processedRows + '行（累計 ' + deletedRows + '/' + totalRows + '）');
+            const totalPart = totalRows > 0 ? ('/' + totalRows) : '';
+            logLine('削除ステップ完了: +' + processedRows + '行（累計 ' + deletedRows + totalPart + '）');
+            if (scannedRows > 0) {
+              logLine('スキャン: ' + scannedRows + '行（次の走査行: ' + cursorRow + '）');
+            }
 
             if (res.done) {
               setMsg('完了しました。', false);
@@ -1555,7 +1562,10 @@ function buildClearAnalysisStatusDialogHtml_(options) {
               return;
             }
 
-            setMsg('削除中... ' + deletedRows + '/' + totalRows + '行（残りステップ: ' + remainingSegments + '）', true);
+            const nextMsg = totalRows > 0
+              ? ('削除中... ' + deletedRows + '/' + totalRows + '行（次の走査行: ' + cursorRow + '）')
+              : ('削除中... ' + deletedRows + '行（次の走査行: ' + cursorRow + '）');
+            setMsg(nextMsg, true);
             setTimeout(runStep, 50);
           })
           .withFailureHandler((err) => {
@@ -1579,8 +1589,6 @@ function buildClearAnalysisStatusDialogHtml_(options) {
 
 function startClearAnalysisStatusJob_(selectedValues) {
   const sheet = getOrCreateAnalysisSheet_();
-  ensureResultSheetLayout_(sheet);
-
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) throw new Error('解析シートにデータがありません。');
 
@@ -1595,35 +1603,13 @@ function startClearAnalysisStatusJob_(selectedValues) {
   const statusCol = header.indexOf('ステータス') + 1;
   if (statusCol === 0) throw new Error('解析シートに「ステータス」列が見つかりません。');
 
-  const values = sheet.getRange(2, statusCol, lastRow - 1, 1).getValues();
-  const selectedSet = new Set(selected);
-  const includeError = selectedSet.has(ANALYSIS_CLEAR_ERROR_OPTION_VALUE);
-  if (includeError) selectedSet.delete(ANALYSIS_CLEAR_ERROR_OPTION_VALUE);
-
-  const rowsToDelete = [];
-  for (let i = 0; i < values.length; i++) {
-    const status = normalizeText_(values[i][0]);
-    if (!status) continue;
-    if (includeError && status.startsWith(ANALYSIS_STATUS_ERROR_PREFIX)) {
-      rowsToDelete.push(i + 2);
-      continue;
-    }
-    if (selectedSet.has(status)) {
-      rowsToDelete.push(i + 2);
-    }
-  }
-
-  if (rowsToDelete.length === 0) {
-    return { jobId: '', totalRows: 0, totalSegments: 0 };
-  }
-
-  rowsToDelete.sort((a, b) => b - a);
-  const segments = buildDeleteRowSegments_(rowsToDelete);
   const jobId = Utilities.getUuid();
+  const includeError = selected.includes(ANALYSIS_CLEAR_ERROR_OPTION_VALUE);
   const state = {
-    segments: segments,
-    totalRows: rowsToDelete.length,
-    totalSegments: segments.length,
+    selected: selected,
+    includeError: includeError,
+    statusCol: statusCol,
+    cursorRow: lastRow,
     deletedRows: 0,
     createdAt: Date.now()
   };
@@ -1632,7 +1618,7 @@ function startClearAnalysisStatusJob_(selectedValues) {
     JSON.stringify(state),
     ANALYSIS_CLEAR_STATUS_JOB_CACHE_TTL_SEC
   );
-  return { jobId: jobId, totalRows: state.totalRows, totalSegments: state.totalSegments };
+  return { jobId: jobId, totalRows: 0 };
 }
 
 function processClearAnalysisStatusJob_(jobId) {
@@ -1644,38 +1630,85 @@ function processClearAnalysisStatusJob_(jobId) {
   }
 
   const state = JSON.parse(text);
-  if (!state || !Array.isArray(state.segments)) {
+  if (!state || !Array.isArray(state.selected)) {
     throw new Error('処理状態が不正です。もう一度お試しください。');
   }
 
   const sheet = getOrCreateAnalysisSheet_();
-  ensureResultSheetLayout_(sheet);
 
   const lock = LockService.getDocumentLock();
   if (!lock.tryLock(20 * 1000)) {
     throw new Error('スプレッドシートが他の処理中です。しばらくして再度お試しください。');
   }
 
-  let processedSegments = 0;
+  const header = sheet
+    .getRange(1, 1, 1, Math.max(RESULT_SHEET_HEADERS.length, sheet.getLastColumn()))
+    .getValues()[0];
+  const statusCol = header.indexOf('ステータス') + 1;
+  if (statusCol === 0) {
+    lock.releaseLock();
+    throw new Error('解析シートに「ステータス」列が見つかりません。');
+  }
+
+  const selectedSet = new Set(
+    state.selected
+      .map((value) => normalizeText_(value))
+      .filter((value) => value && value !== ANALYSIS_CLEAR_ERROR_OPTION_VALUE)
+  );
+  const includeError = !!state.includeError;
+
+  let cursorRow = Math.min(
+    typeof state.cursorRow === 'number' ? state.cursorRow : sheet.getLastRow(),
+    sheet.getLastRow()
+  );
+  let scannedRows = 0;
   let processedRows = 0;
   try {
-    while (processedSegments < ANALYSIS_CLEAR_STATUS_BATCH_SEGMENTS && state.segments.length > 0) {
-      const segment = state.segments.shift();
-      if (!segment || segment.length !== 2) continue;
-      const startRow = segment[0];
-      const count = segment[1];
-      if (!startRow || !count) continue;
-      sheet.deleteRows(startRow, count);
-      state.deletedRows += count;
-      processedSegments++;
-      processedRows += count;
+    const startTime = Date.now();
+    const maxWindows = 5;
+    let windows = 0;
+
+    while (
+      cursorRow >= 2 &&
+      processedRows < ANALYSIS_CLEAR_STATUS_MAX_DELETE_ROWS &&
+      windows < maxWindows &&
+      Date.now() - startTime < 20 * 1000
+    ) {
+      const windowEnd = cursorRow;
+      const windowStart = Math.max(2, windowEnd - ANALYSIS_CLEAR_STATUS_SCAN_WINDOW_ROWS + 1);
+      const windowValues = sheet.getRange(windowStart, statusCol, windowEnd - windowStart + 1, 1).getValues();
+      scannedRows += windowValues.length;
+      windows++;
+
+      let i;
+      for (i = windowValues.length - 1; i >= 0 && processedRows < ANALYSIS_CLEAR_STATUS_MAX_DELETE_ROWS; i--) {
+        const status = normalizeText_(windowValues[i][0]);
+        if (!status) continue;
+
+        const isMatch =
+          (includeError && status.startsWith(ANALYSIS_STATUS_ERROR_PREFIX)) ||
+          selectedSet.has(status);
+        if (!isMatch) continue;
+
+        const rowNumber = windowStart + i;
+        sheet.deleteRow(rowNumber);
+        processedRows += 1;
+        state.deletedRows += 1;
+      }
+
+      if (i >= 0 && processedRows >= ANALYSIS_CLEAR_STATUS_MAX_DELETE_ROWS) {
+        cursorRow = windowStart + i;
+        break;
+      }
+      cursorRow = windowStart - 1;
     }
     SpreadsheetApp.flush();
   } finally {
     lock.releaseLock();
   }
 
-  const done = state.segments.length === 0;
+  const done = cursorRow < 2;
+  state.cursorRow = cursorRow;
   if (done) {
     cache.remove(cacheKey);
   } else {
@@ -1684,48 +1717,15 @@ function processClearAnalysisStatusJob_(jobId) {
 
   return {
     done: done,
-    totalRows: state.totalRows,
-    totalSegments: state.totalSegments,
     deletedRows: state.deletedRows,
-    processedSegments: processedSegments,
     processedRows: processedRows,
-    remainingSegments: state.segments.length
+    scannedRows: scannedRows,
+    cursorRow: cursorRow
   };
 }
 
 function getClearAnalysisStatusJobCacheKey_(jobId) {
   return `${ANALYSIS_CLEAR_STATUS_JOB_CACHE_PREFIX}${jobId}`;
-}
-
-function buildDeleteRowSegments_(rowsDesc) {
-  const segments = [];
-  let blockEnd = rowsDesc[0];
-  let blockStart = blockEnd;
-  for (let idx = 1; idx < rowsDesc.length; idx++) {
-    const row = rowsDesc[idx];
-    if (row === blockStart - 1) {
-      blockStart = row;
-      continue;
-    }
-    pushSplitSegments_(segments, blockStart, blockEnd);
-    blockEnd = row;
-    blockStart = row;
-  }
-  pushSplitSegments_(segments, blockStart, blockEnd);
-  return segments;
-}
-
-function pushSplitSegments_(segments, blockStart, blockEnd) {
-  const totalCount = blockEnd - blockStart + 1;
-  let remaining = totalCount;
-  let segmentEnd = blockEnd;
-  while (remaining > 0) {
-    const count = Math.min(ANALYSIS_CLEAR_STATUS_MAX_DELETE_ROWS, remaining);
-    const start = segmentEnd - count + 1;
-    segments.push([start, count]);
-    segmentEnd = start - 1;
-    remaining -= count;
-  }
 }
 
 function clearAnalysisRowsByStatusSelection_(selectedValues) {
