@@ -48,6 +48,10 @@ const MF_TRADE_PARTNER_HEADERS = [
 const ANALYSIS_STATUS_ERROR_PREFIX = 'エラー:';
 const ANALYSIS_CLEAR_ERROR_OPTION_VALUE = '__ERROR_PREFIX__';
 const ANALYSIS_CLEAR_ERROR_OPTION_LABEL = 'エラー（エラー:〜）';
+const ANALYSIS_CLEAR_STATUS_JOB_CACHE_PREFIX = 'analysis_clear_status_job:';
+const ANALYSIS_CLEAR_STATUS_MAX_DELETE_ROWS = 100;
+const ANALYSIS_CLEAR_STATUS_BATCH_SEGMENTS = 3;
+const ANALYSIS_CLEAR_STATUS_JOB_CACHE_TTL_SEC = 60 * 60;
 const MF_CSV_HEADERS = [
   '取引No',
   '取引日',
@@ -1343,6 +1347,19 @@ function buildClearAnalysisStatusDialogHtml_(options) {
         margin-top: 10px;
         min-height: 16px;
       }
+      .log {
+        background: #fafafa;
+        border: 1px solid #e0e0e0;
+        border-radius: 8px;
+        color: #444;
+        font-size: 11px;
+        line-height: 1.4;
+        margin-top: 8px;
+        max-height: 120px;
+        overflow: auto;
+        padding: 8px;
+        white-space: pre-wrap;
+      }
       .warn {
         color: #b45309;
       }
@@ -1365,6 +1382,7 @@ function buildClearAnalysisStatusDialogHtml_(options) {
         <button type="button" id="cancel">キャンセル</button>
       </div>
       <div id="msg" class="msg muted"></div>
+      <div id="log" class="log"></div>
     </div>
 
     <script>
@@ -1372,16 +1390,48 @@ function buildClearAnalysisStatusDialogHtml_(options) {
 
       const list = document.getElementById('list');
       const msg = document.getElementById('msg');
+      const log = document.getElementById('log');
       const btnSelectAll = document.getElementById('selectAll');
       const btnClearAll = document.getElementById('clearAll');
       const btnRun = document.getElementById('run');
       const btnCancel = document.getElementById('cancel');
 
+      const startedAt = Date.now();
+      let heartbeatTimer = null;
+      let activeJobId = '';
+      let totalRows = 0;
+      let deletedRows = 0;
+
+      function logLine(text) {
+        const sec = ((Date.now() - startedAt) / 1000).toFixed(1);
+        log.textContent += '[+' + sec + 's] ' + text + '\\n';
+        log.scrollTop = log.scrollHeight;
+      }
+
       function setBusy(busy) {
         btnSelectAll.disabled = busy;
         btnClearAll.disabled = busy;
         btnRun.disabled = busy;
-        btnCancel.disabled = busy;
+        list.querySelectorAll('input[type="checkbox"]').forEach((el) => { el.disabled = busy; });
+      }
+
+      function setMsg(text, muted) {
+        msg.textContent = text || '';
+        msg.className = muted ? 'msg muted' : 'msg';
+      }
+
+      function startHeartbeat(prefix) {
+        const start = Date.now();
+        stopHeartbeat();
+        heartbeatTimer = setInterval(() => {
+          const sec = Math.floor((Date.now() - start) / 1000);
+          setMsg(prefix + '（サーバー応答待ち: ' + sec + '秒）', true);
+        }, 1000);
+      }
+
+      function stopHeartbeat() {
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
       }
 
       function render() {
@@ -1428,34 +1478,254 @@ function buildClearAnalysisStatusDialogHtml_(options) {
       });
 
       btnCancel.addEventListener('click', () => {
+        logLine('キャンセルしました（ダイアログを閉じます）');
         google.script.host.close();
       });
 
       btnRun.addEventListener('click', () => {
         const selected = getSelected();
         if (selected.length === 0) {
-          msg.textContent = 'ステータスを1つ以上選択してください。';
+          setMsg('ステータスを1つ以上選択してください。', false);
           return;
         }
-        msg.textContent = '処理中...';
         setBusy(true);
+        setMsg('準備中...', true);
+        log.textContent = '';
+        logLine('実行開始');
+        logLine('選択: ' + selected.join(', '));
+        startHeartbeat('準備中...');
 
         google.script.run
-      .withSuccessHandler(() => {
-            google.script.host.close();
+          .withSuccessHandler((job) => {
+            stopHeartbeat();
+            if (!job || !job.jobId) {
+              setBusy(false);
+              setMsg('対象となる行はありませんでした。', false);
+              logLine('対象0件のため終了');
+              return;
+            }
+            activeJobId = job.jobId;
+            totalRows = job.totalRows || 0;
+            deletedRows = 0;
+            logLine('削除ジョブ作成: ' + activeJobId);
+            logLine('削除対象: ' + totalRows + '行');
+            runStep();
           })
           .withFailureHandler((err) => {
+            stopHeartbeat();
             setBusy(false);
-            msg.textContent = 'エラー: ' + (err && err.message ? err.message : String(err));
+            const message = err && err.message ? err.message : String(err);
+            setMsg('エラー: ' + message, false);
+            logLine('失敗: ' + message);
           })
-          .clearAnalysisRowsByStatusSelection_(selected);
+          .startClearAnalysisStatusJob_(selected);
       });
 
+      function runStep() {
+        if (!activeJobId) {
+          setBusy(false);
+          setMsg('エラー: ジョブIDがありません。', false);
+          return;
+        }
+
+        const prefix = '削除中... ' + deletedRows + '/' + totalRows + '行';
+        setMsg(prefix, true);
+        startHeartbeat(prefix);
+
+        google.script.run
+          .withSuccessHandler((res) => {
+            stopHeartbeat();
+            if (!res) {
+              setBusy(false);
+              setMsg('エラー: サーバー応答が不正です。', false);
+              logLine('失敗: 不正な応答');
+              return;
+            }
+
+            deletedRows = res.deletedRows || deletedRows;
+            const processedRows = res.processedRows || 0;
+            const remainingSegments = res.remainingSegments || 0;
+
+            logLine('削除ステップ完了: +' + processedRows + '行（累計 ' + deletedRows + '/' + totalRows + '）');
+
+            if (res.done) {
+              setMsg('完了しました。', false);
+              logLine('完了');
+              google.script.host.close();
+              return;
+            }
+
+            setMsg('削除中... ' + deletedRows + '/' + totalRows + '行（残りステップ: ' + remainingSegments + '）', true);
+            setTimeout(runStep, 50);
+          })
+          .withFailureHandler((err) => {
+            stopHeartbeat();
+            setBusy(false);
+            const message = err && err.message ? err.message : String(err);
+            setMsg('エラー: ' + message, false);
+            logLine('失敗: ' + message);
+          })
+          .processClearAnalysisStatusJob_(activeJobId);
+      }
+
       render();
+      setMsg('', true);
+      logLine('ダイアログを開きました');
     </script>
   </body>
 </html>
   `;
+}
+
+function startClearAnalysisStatusJob_(selectedValues) {
+  const sheet = getOrCreateAnalysisSheet_();
+  ensureResultSheetLayout_(sheet);
+
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) throw new Error('解析シートにデータがありません。');
+
+  const selected = Array.isArray(selectedValues)
+    ? selectedValues.map((value) => normalizeText_(value)).filter((value) => value)
+    : [];
+  if (selected.length === 0) throw new Error('ステータスが選択されていません。');
+
+  const header = sheet
+    .getRange(1, 1, 1, Math.max(RESULT_SHEET_HEADERS.length, sheet.getLastColumn()))
+    .getValues()[0];
+  const statusCol = header.indexOf('ステータス') + 1;
+  if (statusCol === 0) throw new Error('解析シートに「ステータス」列が見つかりません。');
+
+  const values = sheet.getRange(2, statusCol, lastRow - 1, 1).getValues();
+  const selectedSet = new Set(selected);
+  const includeError = selectedSet.has(ANALYSIS_CLEAR_ERROR_OPTION_VALUE);
+  if (includeError) selectedSet.delete(ANALYSIS_CLEAR_ERROR_OPTION_VALUE);
+
+  const rowsToDelete = [];
+  for (let i = 0; i < values.length; i++) {
+    const status = normalizeText_(values[i][0]);
+    if (!status) continue;
+    if (includeError && status.startsWith(ANALYSIS_STATUS_ERROR_PREFIX)) {
+      rowsToDelete.push(i + 2);
+      continue;
+    }
+    if (selectedSet.has(status)) {
+      rowsToDelete.push(i + 2);
+    }
+  }
+
+  if (rowsToDelete.length === 0) {
+    return { jobId: '', totalRows: 0, totalSegments: 0 };
+  }
+
+  rowsToDelete.sort((a, b) => b - a);
+  const segments = buildDeleteRowSegments_(rowsToDelete);
+  const jobId = Utilities.getUuid();
+  const state = {
+    segments: segments,
+    totalRows: rowsToDelete.length,
+    totalSegments: segments.length,
+    deletedRows: 0,
+    createdAt: Date.now()
+  };
+  CacheService.getUserCache().put(
+    getClearAnalysisStatusJobCacheKey_(jobId),
+    JSON.stringify(state),
+    ANALYSIS_CLEAR_STATUS_JOB_CACHE_TTL_SEC
+  );
+  return { jobId: jobId, totalRows: state.totalRows, totalSegments: state.totalSegments };
+}
+
+function processClearAnalysisStatusJob_(jobId) {
+  const cache = CacheService.getUserCache();
+  const cacheKey = getClearAnalysisStatusJobCacheKey_(normalizeText_(jobId));
+  const text = cache.get(cacheKey);
+  if (!text) {
+    throw new Error('処理状態が見つかりませんでした。もう一度お試しください。');
+  }
+
+  const state = JSON.parse(text);
+  if (!state || !Array.isArray(state.segments)) {
+    throw new Error('処理状態が不正です。もう一度お試しください。');
+  }
+
+  const sheet = getOrCreateAnalysisSheet_();
+  ensureResultSheetLayout_(sheet);
+
+  const lock = LockService.getDocumentLock();
+  if (!lock.tryLock(20 * 1000)) {
+    throw new Error('スプレッドシートが他の処理中です。しばらくして再度お試しください。');
+  }
+
+  let processedSegments = 0;
+  let processedRows = 0;
+  try {
+    while (processedSegments < ANALYSIS_CLEAR_STATUS_BATCH_SEGMENTS && state.segments.length > 0) {
+      const segment = state.segments.shift();
+      if (!segment || segment.length !== 2) continue;
+      const startRow = segment[0];
+      const count = segment[1];
+      if (!startRow || !count) continue;
+      sheet.deleteRows(startRow, count);
+      state.deletedRows += count;
+      processedSegments++;
+      processedRows += count;
+    }
+    SpreadsheetApp.flush();
+  } finally {
+    lock.releaseLock();
+  }
+
+  const done = state.segments.length === 0;
+  if (done) {
+    cache.remove(cacheKey);
+  } else {
+    cache.put(cacheKey, JSON.stringify(state), ANALYSIS_CLEAR_STATUS_JOB_CACHE_TTL_SEC);
+  }
+
+  return {
+    done: done,
+    totalRows: state.totalRows,
+    totalSegments: state.totalSegments,
+    deletedRows: state.deletedRows,
+    processedSegments: processedSegments,
+    processedRows: processedRows,
+    remainingSegments: state.segments.length
+  };
+}
+
+function getClearAnalysisStatusJobCacheKey_(jobId) {
+  return `${ANALYSIS_CLEAR_STATUS_JOB_CACHE_PREFIX}${jobId}`;
+}
+
+function buildDeleteRowSegments_(rowsDesc) {
+  const segments = [];
+  let blockEnd = rowsDesc[0];
+  let blockStart = blockEnd;
+  for (let idx = 1; idx < rowsDesc.length; idx++) {
+    const row = rowsDesc[idx];
+    if (row === blockStart - 1) {
+      blockStart = row;
+      continue;
+    }
+    pushSplitSegments_(segments, blockStart, blockEnd);
+    blockEnd = row;
+    blockStart = row;
+  }
+  pushSplitSegments_(segments, blockStart, blockEnd);
+  return segments;
+}
+
+function pushSplitSegments_(segments, blockStart, blockEnd) {
+  const totalCount = blockEnd - blockStart + 1;
+  let remaining = totalCount;
+  let segmentEnd = blockEnd;
+  while (remaining > 0) {
+    const count = Math.min(ANALYSIS_CLEAR_STATUS_MAX_DELETE_ROWS, remaining);
+    const start = segmentEnd - count + 1;
+    segments.push([start, count]);
+    segmentEnd = start - 1;
+    remaining -= count;
+  }
 }
 
 function clearAnalysisRowsByStatusSelection_(selectedValues) {
