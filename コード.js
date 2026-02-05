@@ -2391,6 +2391,14 @@ function buildCsvDownloadSelectorDialogHtml_() {
       const moneyForward = document.getElementById('moneyForward');
       const tradePartners = document.getElementById('tradePartners');
 
+      function ensureGoogleScriptRun_() {
+        try {
+          return !!(google && google.script && google.script.run);
+        } catch (e) {
+          return false;
+        }
+      }
+
       function setBusy(busy) {
         runButton.disabled = busy;
         cancelButton.disabled = busy;
@@ -2441,6 +2449,11 @@ function buildCsvDownloadSelectorDialogHtml_() {
       }
 
       runButton.addEventListener('click', () => {
+        if (!ensureGoogleScriptRun_()) {
+          setMessage('google.script.run が利用できません（ダイアログを閉じて再度お試しください）', true);
+          return;
+        }
+
         const options = {
           moneyForward: moneyForward.checked,
           tradePartners: tradePartners.checked
@@ -2452,27 +2465,53 @@ function buildCsvDownloadSelectorDialogHtml_() {
 
         setBusy(true);
         setMessage('CSVを準備しています...', false);
-        google.script.run
-          .withSuccessHandler((result) => {
-            const messages = result && result.messages ? result.messages.filter(Boolean) : [];
-            if (messages.length > 0) {
-              setMessage(messages.join('\\n'), false);
-            }
-            triggerDownloads(result && result.downloads ? result.downloads : []);
-          })
-          .withFailureHandler((error) => {
-            setBusy(false);
-            const message = error && error.message ? error.message : 'CSVの準備に失敗しました。';
-            setMessage(message, true);
-          })
-          .prepareCsvDownloads_(options);
+        try {
+          google.script.run
+            .withSuccessHandler((result) => {
+              const messages = result && result.messages ? result.messages.filter(Boolean) : [];
+              if (messages.length > 0) {
+                setMessage(messages.join('\\n'), false);
+              }
+              triggerDownloads(result && result.downloads ? result.downloads : []);
+            })
+            .withFailureHandler((error) => {
+              setBusy(false);
+              const message = error && error.message ? error.message : 'CSVの準備に失敗しました。';
+              setMessage(message, true);
+            })
+            .prepareCsvDownloads(options);
+        } catch (error) {
+          setBusy(false);
+          const message = error && error.message ? error.message : 'CSVの準備に失敗しました。';
+          setMessage(message, true);
+        }
       });
 
       cancelButton.addEventListener('click', () => google.script.host.close());
+
+      (function pingServer_() {
+        if (!ensureGoogleScriptRun_()) return;
+        try {
+          google.script.run
+            .withSuccessHandler(() => {})
+            .withFailureHandler((error) => {
+              const message = error && error.message ? error.message : 'サーバー疎通に失敗しました。';
+              setMessage(message, true);
+            })
+            .pingCsvDownloadDialog();
+        } catch (error) {
+          const message = error && error.message ? error.message : 'サーバー疎通に失敗しました。';
+          setMessage(message, true);
+        }
+      })();
     </script>
   </body>
 </html>
   `;
+}
+
+function prepareCsvDownloads(options) {
+  return prepareCsvDownloads_(options);
 }
 
 function prepareCsvDownloads_(options) {
@@ -2515,6 +2554,10 @@ function prepareCsvDownloads_(options) {
   }
 
   return { downloads: downloads, messages: messages };
+}
+
+function pingCsvDownloadDialog() {
+  return { ok: true, timestamp: Date.now() };
 }
 
 function buildMoneyForwardCsvPayload_() {
