@@ -31,6 +31,7 @@ const CREDIT_SUB_ACCOUNT_CANDIDATES = ['カード情報', '空欄'];
 const EMPTY_CELL_COLOR = '#fff2cc';
 const DUPLICATE_CELL_COLOR = '#f4cccc';
 const MIXED_TAX_CELL_COLOR = '#fce5cd';
+const POSSIBLE_DUPLICATE_ROW_COLOR = '#fce8b2';
 
 const MF_TAX_CATEGORY_STANDARD = '課税仕入 10%';
 const MF_TAX_CATEGORY_REDUCED = '課税仕入 8%';
@@ -818,6 +819,67 @@ function highlightTaxCategoryCell_(sheet, rowIndex, taxCategory) {
   sheet.getRange(rowIndex, 15).setBackground(color);
 }
 
+function highlightPossibleDuplicateRowsByDateAndAmount_(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return 0;
+
+  const lastColumn = Math.max(RESULT_SHEET_HEADERS.length, sheet.getLastColumn());
+  const header = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+  const paymentDateIndex = header.indexOf('支払日');
+  const amountIndex = header.indexOf('金額');
+  if (paymentDateIndex === -1 || amountIndex === -1) return 0;
+
+  const range = sheet.getRange(2, 1, lastRow - 1, lastColumn);
+  const values = range.getValues();
+  const backgrounds = range.getBackgrounds();
+  const duplicateMap = {};
+  const duplicateRows = new Set();
+
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+    const paymentDate = normalizeDate_(row[paymentDateIndex]);
+    const amount = normalizeAmount_(row[amountIndex]);
+    if (!paymentDate || amount <= 0) continue;
+
+    const key = `${paymentDate}__${amount}`;
+    if (!duplicateMap[key]) duplicateMap[key] = [];
+    duplicateMap[key].push(i);
+  }
+
+  Object.keys(duplicateMap).forEach((key) => {
+    if (duplicateMap[key].length > 1) {
+      duplicateMap[key].forEach((rowIndex) => duplicateRows.add(rowIndex));
+    }
+  });
+
+  for (let i = 0; i < backgrounds.length; i++) {
+    for (let j = 0; j < backgrounds[i].length; j++) {
+      if (backgrounds[i][j] === POSSIBLE_DUPLICATE_ROW_COLOR) {
+        backgrounds[i][j] = null;
+      }
+    }
+  }
+
+  duplicateRows.forEach((rowIndex) => {
+    const row = values[rowIndex];
+    let lastDataColumn = 0;
+    for (let j = row.length - 1; j >= 0; j--) {
+      if (!isBlankCell_(row[j])) {
+        lastDataColumn = j + 1;
+        break;
+      }
+    }
+    if (lastDataColumn === 0) return;
+
+    for (let j = 0; j < lastDataColumn; j++) {
+      backgrounds[rowIndex][j] = POSSIBLE_DUPLICATE_ROW_COLOR;
+    }
+  });
+
+  range.setBackgrounds(backgrounds);
+  return duplicateRows.size;
+}
+
 function collectMissingExtractionLabels_(analysis) {
   const missing = [];
   if (!analysis.paymentDate) missing.push('支払日');
@@ -1135,6 +1197,7 @@ function scanToSheet() {
   }
 
   const limitReached = targetFiles.length > processCount;
+  const possibleDuplicateRowCount = highlightPossibleDuplicateRowsByDateAndAmount_(sheet);
   const messages = [];
   if (processCount === 0) {
     messages.push('新しいファイルは見つかりませんでした。');
@@ -1142,6 +1205,9 @@ function scanToSheet() {
     messages.push(`${processCount} 件のファイルをスキャンしました。`);
   }
   if (duplicateCount > 0) messages.push(`重複候補: ${duplicateCount} 件（提案名に連番を付与済み）`);
+  if (possibleDuplicateRowCount > 0) {
+    messages.push(`日付+金額が一致する重複候補: ${possibleDuplicateRowCount} 行（行全体を色付け）`);
+  }
   if (errorCount > 0) messages.push(`エラー: ${errorCount} 件`);
   if (limitReached) messages.push(`解析上限 ${maxCount} 件に達しました。再実行で続きが追加されます。`);
 
@@ -3051,6 +3117,8 @@ function callGeminiApi(base64Data, mimeType, apiKey) {
 - レシート/領収書: 「日付」「取引日」「発行日」「購入日」等のうち最も妥当な日付。
 - 請求書: 支払日が明確ならそれ、無ければ発行日。支払期限/入金期限は使わない。
 - 年が読み取れない場合は、現在に近い年を推定。
+- 「25-06-03」のような「年-月-日」形式や2桁の年は、和暦ではなく西暦の下2桁（20XX年）として優先的に解釈する。
+- 解釈結果が著しく未来の日付（例：令和25年＝2043年など）になる場合は、和暦ではなく西暦とみなす。
 - YYYY/MM/DD 形式に整形できない場合は ""。
 
 2) paymentMethod（支払方法）
