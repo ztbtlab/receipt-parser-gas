@@ -137,8 +137,7 @@ function onOpen() {
     .addItem('3. フォルダ移動', 'moveFilesToSpecifiedFolder')
     .addItem('4. 取引先一覧更新', 'updateTradePartnersFromAnalysis')
     .addItem('5. マネフォ用解析', 'analyzeMoneyForward')
-    .addItem('6. マネフォCSVダウンロード', 'downloadMoneyForwardCsv')
-    .addItem('7. 取引先CSVダウンロード', 'downloadTradePartnersCsv')
+    .addItem('6. CSVダウンロード', 'openCsvDownloadSelector')
     .addSeparator()
     .addItem('画像プレビューを開く', 'showImageSidebar')
     .addItem('ヘルプを見る', 'showHelp')
@@ -2289,37 +2288,324 @@ function resetMoneyForwardSheet_(sheet) {
   sheet.setFrozenRows(1);
 }
 
-function downloadMoneyForwardCsv() {
-  const ui = SpreadsheetApp.getUi();
-  const sheet = getMoneyForwardSheet_(ui);
+function openCsvDownloadSelector() {
+  const html = HtmlService.createHtmlOutput(buildCsvDownloadSelectorDialogHtml_())
+    .setWidth(440)
+    .setHeight(260);
+  SpreadsheetApp.getUi().showModalDialog(html, 'CSVダウンロード');
+}
+
+function buildCsvDownloadSelectorDialogHtml_() {
+  return `
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      html,
+      body {
+        font-family: "Noto Sans JP", Arial, sans-serif;
+        margin: 0;
+        padding: 0;
+      }
+      .wrap {
+        padding: 16px;
+      }
+      .title {
+        font-size: 14px;
+        font-weight: 700;
+        margin: 0 0 8px;
+      }
+      .desc {
+        color: #555;
+        font-size: 12px;
+        margin: 0 0 12px;
+      }
+      .item {
+        align-items: center;
+        display: flex;
+        gap: 8px;
+        margin: 8px 0;
+      }
+      .item label {
+        cursor: pointer;
+        font-size: 13px;
+      }
+      .actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      button {
+        background: #f3f3f3;
+        border: 1px solid #d0d0d0;
+        border-radius: 8px;
+        cursor: pointer;
+        font-size: 12px;
+        padding: 8px 12px;
+      }
+      button.primary {
+        background: #1a73e8;
+        border-color: #1a73e8;
+        color: #fff;
+      }
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.6;
+      }
+      .msg {
+        color: #555;
+        font-size: 12px;
+        line-height: 1.5;
+        margin-top: 10px;
+        min-height: 16px;
+        white-space: pre-wrap;
+      }
+      .error {
+        color: #b91c1c;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="title">ダウンロード対象を選択</div>
+      <p class="desc">チェックしたCSVを出力します（複数選択可）。</p>
+      <div class="item">
+        <input type="checkbox" id="moneyForward" checked>
+        <label for="moneyForward">マネフォ用CSV</label>
+      </div>
+      <div class="item">
+        <input type="checkbox" id="tradePartners" checked>
+        <label for="tradePartners">取引先CSV</label>
+      </div>
+      <div class="actions">
+        <button type="button" id="run" class="primary">ダウンロード</button>
+        <button type="button" id="cancel">キャンセル</button>
+      </div>
+      <div id="msg" class="msg"></div>
+    </div>
+    <script>
+      const runButton = document.getElementById('run');
+      const cancelButton = document.getElementById('cancel');
+      const msg = document.getElementById('msg');
+      const moneyForward = document.getElementById('moneyForward');
+      const tradePartners = document.getElementById('tradePartners');
+
+      function ensureGoogleScriptRun_() {
+        try {
+          return !!(google && google.script && google.script.run);
+        } catch (e) {
+          return false;
+        }
+      }
+
+      function setBusy(busy) {
+        runButton.disabled = busy;
+        cancelButton.disabled = busy;
+        moneyForward.disabled = busy;
+        tradePartners.disabled = busy;
+      }
+
+      function setMessage(text, isError) {
+        msg.textContent = text || '';
+        if (isError) {
+          msg.classList.add('error');
+        } else {
+          msg.classList.remove('error');
+        }
+      }
+
+      function triggerDownloads(downloads) {
+        if (!downloads || downloads.length === 0) {
+          setBusy(false);
+          const currentMessage = (msg.textContent || '').trim();
+          if (!currentMessage || currentMessage === 'CSVを準備しています...') {
+            setMessage('ダウンロード対象がありません。', true);
+          }
+          return;
+        }
+
+        let index = 0;
+        const runNext = () => {
+          if (index >= downloads.length) {
+            setMessage('ダウンロードを開始しました。', false);
+            setTimeout(() => google.script.host.close(), 700);
+            return;
+          }
+
+          const target = downloads[index++];
+          const blob = new Blob([target.csvContent || ''], { type: 'text/csv;charset=utf-8' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = target.filename || 'download.csv';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          setTimeout(() => {
+            URL.revokeObjectURL(url);
+            runNext();
+          }, 300);
+        };
+
+        runNext();
+      }
+
+      runButton.addEventListener('click', () => {
+        if (!ensureGoogleScriptRun_()) {
+          setMessage('google.script.run が利用できません（ダイアログを閉じて再度お試しください）', true);
+          return;
+        }
+
+        const options = {
+          moneyForward: moneyForward.checked,
+          tradePartners: tradePartners.checked
+        };
+        if (!options.moneyForward && !options.tradePartners) {
+          setMessage('少なくとも1つ選択してください。', true);
+          return;
+        }
+
+        setBusy(true);
+        setMessage('CSVを準備しています...', false);
+        try {
+          google.script.run
+            .withSuccessHandler((result) => {
+              const messages = result && result.messages ? result.messages.filter(Boolean) : [];
+              if (messages.length > 0) {
+                setMessage(messages.join('\\n'), false);
+              }
+              triggerDownloads(result && result.downloads ? result.downloads : []);
+            })
+            .withFailureHandler((error) => {
+              setBusy(false);
+              const message = error && error.message ? error.message : 'CSVの準備に失敗しました。';
+              setMessage(message, true);
+            })
+            .prepareCsvDownloads(options);
+        } catch (error) {
+          setBusy(false);
+          const message = error && error.message ? error.message : 'CSVの準備に失敗しました。';
+          setMessage(message, true);
+        }
+      });
+
+      cancelButton.addEventListener('click', () => google.script.host.close());
+
+      (function pingServer_() {
+        if (!ensureGoogleScriptRun_()) return;
+        try {
+          google.script.run
+            .withSuccessHandler(() => {})
+            .withFailureHandler((error) => {
+              const message = error && error.message ? error.message : 'サーバー疎通に失敗しました。';
+              setMessage(message, true);
+            })
+            .pingCsvDownloadDialog();
+        } catch (error) {
+          const message = error && error.message ? error.message : 'サーバー疎通に失敗しました。';
+          setMessage(message, true);
+        }
+      })();
+    </script>
+  </body>
+</html>
+  `;
+}
+
+function prepareCsvDownloads(options) {
+  return prepareCsvDownloads_(options);
+}
+
+function prepareCsvDownloads_(options) {
+  const wantMoneyForward = !!(options && options.moneyForward);
+  const wantTradePartners = !!(options && options.tradePartners);
+  const downloads = [];
+  const messages = [];
+  const errors = [];
+
+  if (wantMoneyForward) {
+    try {
+      const payload = buildMoneyForwardCsvPayload_();
+      downloads.push({ filename: payload.filename, csvContent: payload.csvContent });
+      if (payload.markedCount > 0) {
+        messages.push(`マネフォ用: ${payload.markedCount} 件のファイルに「CSV済」を付与しました。`);
+      }
+    } catch (e) {
+      errors.push(String(e && e.message ? e.message : e));
+    }
+  }
+
+  if (wantTradePartners) {
+    try {
+      const payload = buildTradePartnersCsvPayload_();
+      downloads.push({ filename: payload.filename, csvContent: payload.csvContent });
+      if (payload.missingNames > 0) {
+        messages.push(`取引先CSV: 取引先名が空欄の行 ${payload.missingNames} 件を含めて出力します。`);
+      }
+    } catch (e) {
+      errors.push(String(e && e.message ? e.message : e));
+    }
+  }
+
+  if (downloads.length === 0 && errors.length > 0) {
+    throw new Error(errors.join('\n'));
+  }
+
+  if (errors.length > 0) {
+    messages.push(...errors.map((message) => `未出力: ${message}`));
+  }
+
+  return { downloads: downloads, messages: messages };
+}
+
+function pingCsvDownloadDialog() {
+  return { ok: true, timestamp: Date.now() };
+}
+
+function buildMoneyForwardCsvPayload_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('マネフォ用');
+  if (!sheet) {
+    throw new Error('「マネフォ用」シートが見つかりません。先に「5. マネフォ用解析」を実行してください。');
+  }
+
   const filter = sheet.getFilter();
   if (filter) filter.remove();
 
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) {
-    ui.alert('「マネフォ用」シートにデータがありません。');
-    return;
+    throw new Error('「マネフォ用」シートにデータがありません。');
   }
 
   const range = sheet.getRange(2, 1, lastRow - 1, MF_CSV_HEADERS.length);
   const values = range.getValues();
   const rows = values.filter((row) => row.some((cell) => !isBlankCell_(cell)));
-
   if (rows.length === 0) {
-    ui.alert('「マネフォ用」シートに出力対象の行がありません。');
-    return;
+    throw new Error('「マネフォ用」シートに出力対象の行がありません。');
   }
 
-  const csvContent = buildCsvContent_(MF_CSV_HEADERS, rows);
-  const filename = buildMoneyForwardFilename_();
-  showDownloadDialog_(filename, csvContent);
+  return {
+    filename: buildMoneyForwardFilename_(),
+    csvContent: buildCsvContent_(MF_CSV_HEADERS, rows),
+    markedCount: markCsvProcessedFiles_(rows)
+  };
+}
 
-  const markedCount = markCsvProcessedFiles_(rows);
-  const messages = ['CSVをダウンロードしました。'];
-  if (markedCount > 0) {
-    messages.push(`${markedCount} 件のファイルに「CSV済」を付与しました。`);
+function downloadMoneyForwardCsv() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    const payload = buildMoneyForwardCsvPayload_();
+    showDownloadDialog_(payload.filename, payload.csvContent);
+
+    const messages = ['CSVをダウンロードしました。'];
+    if (payload.markedCount > 0) {
+      messages.push(`${payload.markedCount} 件のファイルに「CSV済」を付与しました。`);
+    }
+    ui.alert(messages.join('\n'));
+  } catch (e) {
+    ui.alert(String(e && e.message ? e.message : e));
   }
-  ui.alert(messages.join('\n'));
 }
 
 function isAllowedReceiptMimeType_(mimeType) {
@@ -2836,37 +3122,49 @@ function buildTradePartnerFilename_() {
   return `mf_trade_partners_${stamp}.csv`;
 }
 
-function downloadTradePartnersCsv() {
-  const ui = SpreadsheetApp.getUi();
+function buildTradePartnersCsvPayload_() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let sheet = ss.getSheetByName(MF_TRADE_PARTNER_SHEET_NAME);
-
+  const sheet = ss.getSheetByName(MF_TRADE_PARTNER_SHEET_NAME);
   if (!sheet) {
-    sheet = ss.insertSheet(MF_TRADE_PARTNER_SHEET_NAME);
-    initializeTradePartnerSheet_(sheet);
-    ui.alert('「取引先一覧」シートが見つからなかったため、新規作成しました。');
+    throw new Error('「取引先一覧」シートが見つかりません。先に「4. 取引先一覧更新」を実行してください。');
   }
 
-  ensureTradePartnerSheetLayout_(sheet, ui);
+  ensureTradePartnerSheetLayout_(sheet, null);
 
   const lastRow = sheet.getLastRow();
-  const headers = MF_TRADE_PARTNER_HEADERS;
-  const rows = lastRow >= 2
-    ? sheet.getRange(2, 1, lastRow - 1, headers.length).getValues()
-    : [];
-
-  const missingNames = rows.filter((row) => isBlankCell_(row[1])).length;
-  if (missingNames > 0) {
-    ui.alert(
-      `取引先名が空欄の行が ${missingNames} 件あります。\n` +
-      'マネーフォワードの仕様では「取引先名」は必須です。\n' +
-      '空欄のままでも全行をCSV出力します。'
-    );
+  if (lastRow < 2) {
+    throw new Error('「取引先一覧」シートにデータがありません。');
   }
 
-  const csvContent = buildCsvContent_(headers, rows);
-  const filename = buildTradePartnerFilename_();
-  showDownloadDialog_(filename, csvContent);
+  const headers = MF_TRADE_PARTNER_HEADERS;
+  const rows = sheet.getRange(2, 1, lastRow - 1, headers.length).getValues();
+  if (rows.length === 0) {
+    throw new Error('「取引先一覧」シートにデータがありません。');
+  }
+
+  const missingNames = rows.filter((row) => isBlankCell_(row[1])).length;
+  return {
+    filename: buildTradePartnerFilename_(),
+    csvContent: buildCsvContent_(headers, rows),
+    missingNames: missingNames
+  };
+}
+
+function downloadTradePartnersCsv() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    const payload = buildTradePartnersCsvPayload_();
+    if (payload.missingNames > 0) {
+      ui.alert(
+        `取引先名が空欄の行が ${payload.missingNames} 件あります。\n` +
+        'マネーフォワードの仕様では「取引先名」は必須です。\n' +
+        '空欄のままでも全行をCSV出力します。'
+      );
+    }
+    showDownloadDialog_(payload.filename, payload.csvContent);
+  } catch (e) {
+    ui.alert(String(e && e.message ? e.message : e));
+  }
 }
 
 function updateTradePartnersFromAnalysis() {
@@ -3067,7 +3365,7 @@ function showDownloadDialog_(filename, csvContent) {
         <script>
           const csv = ${JSON.stringify(csvContent)};
           const filename = ${JSON.stringify(filename)};
-          const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+          const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
           const url = URL.createObjectURL(blob);
           const link = document.createElement('a');
           link.href = url;
