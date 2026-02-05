@@ -2418,7 +2418,10 @@ function buildCsvDownloadSelectorDialogHtml_() {
       function triggerDownloads(downloads) {
         if (!downloads || downloads.length === 0) {
           setBusy(false);
-          setMessage('ダウンロード対象がありません。', true);
+          const currentMessage = (msg.textContent || '').trim();
+          if (!currentMessage || currentMessage === 'CSVを準備しています...') {
+            setMessage('ダウンロード対象がありません。', true);
+          }
           return;
         }
 
@@ -2431,7 +2434,7 @@ function buildCsvDownloadSelectorDialogHtml_() {
           }
 
           const target = downloads[index++];
-          const blob = new Blob([target.csvContent || ''], { type: 'text/csv;charset=utf-8;' });
+          const blob = new Blob([target.csvContent || ''], { type: 'text/csv;charset=utf-8' });
           const url = URL.createObjectURL(blob);
           const link = document.createElement('a');
           link.href = url;
@@ -3362,7 +3365,7 @@ function showDownloadDialog_(filename, csvContent) {
         <script>
           const csv = ${JSON.stringify(csvContent)};
           const filename = ${JSON.stringify(filename)};
-          const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+          const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
           const url = URL.createObjectURL(blob);
           const link = document.createElement('a');
           link.href = url;
