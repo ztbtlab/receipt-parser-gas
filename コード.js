@@ -21,20 +21,22 @@ const SETTINGS_KEYS = {
   logOutput: 'ログ出力',
   creditAccountCard: '貸方勘定科目(クレカ)',
   creditAccountOther: '貸方勘定科目(それ以外)',
-  creditSubAccountCard: '貸方補助科目(クレカ)'
+  creditSubAccountCard: '貸方補助科目(クレカ)',
+  mfSummaryMode: 'マネフォ摘要欄'
 };
 
 const DELIMITER_CANDIDATES = ['-', '_', '｜'];
 const LOG_OUTPUT_CANDIDATES = ['ON', 'OFF'];
 const CREDIT_SUB_ACCOUNT_CANDIDATES = ['カード情報', '空欄'];
+const MF_SUMMARY_MODE_CANDIDATES = ['購入内容', '取引先名', '取引先名＋購入内容'];
 
 const EMPTY_CELL_COLOR = '#fff2cc';
 const DUPLICATE_CELL_COLOR = '#f4cccc';
 const MIXED_TAX_CELL_COLOR = '#fce5cd';
 const POSSIBLE_DUPLICATE_ROW_COLOR = '#fce8b2';
 
-const MF_TAX_CATEGORY_STANDARD = '課税仕入 10%';
-const MF_TAX_CATEGORY_REDUCED = '課税仕入 8%';
+const MF_TAX_CATEGORY_STANDARD = '課仕 10%';
+const MF_TAX_CATEGORY_REDUCED = '課仕 8%';
 const MF_CARD_SUB_ACCOUNT = '三井住友ゴールドカード';
 const MF_PROCESSED_PREFIX = 'CSV済';
 const MF_TRADE_PARTNER_SHEET_NAME = '取引先一覧';
@@ -343,7 +345,8 @@ function resetSettingsSheetLayout_() {
     { key: SETTINGS_KEYS.logOutput, defaultValue: 'ON' },
     { key: SETTINGS_KEYS.creditAccountCard, defaultValue: '未払金' },
     { key: SETTINGS_KEYS.creditAccountOther, defaultValue: '役員借入金' },
-    { key: SETTINGS_KEYS.creditSubAccountCard, defaultValue: CREDIT_SUB_ACCOUNT_CANDIDATES[0] }
+    { key: SETTINGS_KEYS.creditSubAccountCard, defaultValue: CREDIT_SUB_ACCOUNT_CANDIDATES[0] },
+    { key: SETTINGS_KEYS.mfSummaryMode, defaultValue: MF_SUMMARY_MODE_CANDIDATES[0] }
   ];
 
   const rows = definitions.map((def) => [
@@ -379,6 +382,14 @@ function resetSettingsSheetLayout_() {
     sheet.getRange(creditSubAccountRow, 2).setDataValidation(rule);
   }
 
+  const mfSummaryModeRow = keyRows[SETTINGS_KEYS.mfSummaryMode];
+  if (mfSummaryModeRow) {
+    const rule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(MF_SUMMARY_MODE_CANDIDATES, true)
+      .build();
+    sheet.getRange(mfSummaryModeRow, 2).setDataValidation(rule);
+  }
+
   const folderRow = keyRows[SETTINGS_KEYS.folderUrl];
   if (folderRow) {
     sheet
@@ -408,6 +419,10 @@ function getSettingsOrAlert_(options) {
   const creditAccountOther = normalizeText_(settingsMap[SETTINGS_KEYS.creditAccountOther]) || '役員借入金';
   const creditSubAccountCard = normalizeText_(settingsMap[SETTINGS_KEYS.creditSubAccountCard]) ||
     CREDIT_SUB_ACCOUNT_CANDIDATES[0];
+  const mfSummaryModeRaw = normalizeText_(settingsMap[SETTINGS_KEYS.mfSummaryMode]);
+  const mfSummaryMode = MF_SUMMARY_MODE_CANDIDATES.includes(mfSummaryModeRaw)
+    ? mfSummaryModeRaw
+    : MF_SUMMARY_MODE_CANDIDATES[0];
 
   const errors = [];
   let folderId = '';
@@ -454,7 +469,8 @@ function getSettingsOrAlert_(options) {
     logOutput: logOutput,
     creditAccountCard: creditAccountCard,
     creditAccountOther: creditAccountOther,
-    creditSubAccountCard: creditSubAccountCard
+    creditSubAccountCard: creditSubAccountCard,
+    mfSummaryMode: mfSummaryMode
   };
 }
 
@@ -478,7 +494,11 @@ function ensureSettingsSheet_() {
     { key: SETTINGS_KEYS.delimiter, defaultValue: DELIMITER_CANDIDATES[0] },
     { key: SETTINGS_KEYS.fileNameRuleSheet, defaultValue: FILE_NAME_RULE_SHEET_NAME },
     { key: SETTINGS_KEYS.scanLimit, defaultValue: 50 },
-    { key: SETTINGS_KEYS.logOutput, defaultValue: 'ON' }
+    { key: SETTINGS_KEYS.logOutput, defaultValue: 'ON' },
+    { key: SETTINGS_KEYS.creditAccountCard, defaultValue: '未払金' },
+    { key: SETTINGS_KEYS.creditAccountOther, defaultValue: '役員借入金' },
+    { key: SETTINGS_KEYS.creditSubAccountCard, defaultValue: CREDIT_SUB_ACCOUNT_CANDIDATES[0] },
+    { key: SETTINGS_KEYS.mfSummaryMode, defaultValue: MF_SUMMARY_MODE_CANDIDATES[0] }
   ];
 
   const settingsMap = getSettingsMap_(sheet);
@@ -513,6 +533,14 @@ function ensureSettingsSheet_() {
       .requireValueInList(CREDIT_SUB_ACCOUNT_CANDIDATES, true)
       .build();
     sheet.getRange(creditSubAccountRow, 2).setDataValidation(rule);
+  }
+
+  const mfSummaryModeRow = keyRows[SETTINGS_KEYS.mfSummaryMode];
+  if (mfSummaryModeRow) {
+    const rule = SpreadsheetApp.newDataValidation()
+      .requireValueInList(MF_SUMMARY_MODE_CANDIDATES, true)
+      .build();
+    sheet.getRange(mfSummaryModeRow, 2).setDataValidation(rule);
   }
 
   const folderRow = keyRows[SETTINGS_KEYS.folderUrl];
@@ -2185,13 +2213,22 @@ function analyzeMoneyForward() {
   const partnerMap = getTradePartnerMap_(ui);
   const accountRules = getAccountRules_();
   const rows = [];
+  const mixedTaxFlags = [];
   const errors = [];
   let transactionNo = 1;
 
-  const data = sheet.getRange(2, 1, lastRow - 1, RESULT_SHEET_HEADERS.length).getValues();
+  const headerWidth = Math.max(RESULT_SHEET_HEADERS.length, sheet.getLastColumn());
+  const headerRow = sheet.getRange(1, 1, 1, headerWidth).getValues()[0];
+  const headerIndexMap = buildHeaderIndexMap_(headerRow);
+  const data = sheet.getRange(2, 1, lastRow - 1, headerWidth).getValues();
   for (let i = 0; i < data.length; i++) {
     const row = data[i];
-    const fileId = row[0];
+    const fileId = getRowValueByHeader_(
+      row,
+      headerIndexMap,
+      'ファイルID',
+      RESULT_SHEET_HEADERS.indexOf('ファイルID')
+    );
     if (!fileId) continue;
 
     try {
@@ -2199,14 +2236,55 @@ function analyzeMoneyForward() {
       const fileName = file.getName();
       if (isCsvMarkedFile_(fileName)) continue;
 
-      const paymentDate = normalizeDate_(row[6]) || formatDate_(file.getDateCreated());
-      const paymentMethod = normalizePaymentMethod_(row[7]);
-      const cardInfo = normalizeCardInfo_(row[8], paymentMethod);
-      const vendorName = normalizeText_(row[9]);
-      const invoiceNumber = normalizeInvoiceNumber_(row[10]);
-      const summary = normalizeText_(row[11]);
-      const amount = normalizeAmount_(row[12]);
-      const taxCategory = normalizeTaxCategory_(row[14]);
+      const paymentDate = normalizeDate_(getRowValueByHeader_(
+        row,
+        headerIndexMap,
+        '支払日',
+        RESULT_SHEET_HEADERS.indexOf('支払日')
+      )) || formatDate_(file.getDateCreated());
+      const paymentMethod = normalizePaymentMethod_(getRowValueByHeader_(
+        row,
+        headerIndexMap,
+        '支払い方法',
+        RESULT_SHEET_HEADERS.indexOf('支払い方法')
+      ));
+      const cardInfo = normalizeCardInfo_(getRowValueByHeader_(
+        row,
+        headerIndexMap,
+        'カード情報',
+        RESULT_SHEET_HEADERS.indexOf('カード情報')
+      ), paymentMethod);
+      const vendorName = normalizeText_(getRowValueByHeader_(
+        row,
+        headerIndexMap,
+        '取引先',
+        RESULT_SHEET_HEADERS.indexOf('取引先')
+      ));
+      const invoiceNumber = normalizeInvoiceNumber_(getRowValueByHeader_(
+        row,
+        headerIndexMap,
+        'インボイス番号',
+        RESULT_SHEET_HEADERS.indexOf('インボイス番号')
+      ));
+      const summary = normalizeText_(getRowValueByHeader_(
+        row,
+        headerIndexMap,
+        '品目（概要）',
+        RESULT_SHEET_HEADERS.indexOf('品目（概要）')
+      ));
+      const amount = normalizeAmount_(getRowValueByHeader_(
+        row,
+        headerIndexMap,
+        '金額',
+        RESULT_SHEET_HEADERS.indexOf('金額')
+      ));
+      const rawTaxCategory = getRowValueByHeader_(
+        row,
+        headerIndexMap,
+        '消費税区分',
+        RESULT_SHEET_HEADERS.indexOf('消費税区分')
+      );
+      const taxCategory = normalizeTaxCategory_(rawTaxCategory);
 
       const accountTitle = accountRules.length > 0
         ? callGeminiApiForAccountTitle_(
@@ -2233,7 +2311,7 @@ function analyzeMoneyForward() {
         summary: summary,
         paymentMethod: paymentMethod,
         cardInfo: cardInfo,
-        taxCategory: taxCategory,
+        taxCategory: rawTaxCategory,
         accountTitle: accountTitle
       };
       const rowData = buildMoneyForwardRow_(
@@ -2244,6 +2322,7 @@ function analyzeMoneyForward() {
         settings
       );
       rows.push(rowData);
+      mixedTaxFlags.push(taxCategory === '混在あり');
       transactionNo++;
     } catch (e) {
       console.error(e);
@@ -2261,11 +2340,36 @@ function analyzeMoneyForward() {
   }
 
   mfSheet.getRange(2, 1, rows.length, MF_CSV_HEADERS.length).setValues(rows);
+  applyMoneyForwardAccountTitleValidation_(mfSheet);
+  applyMoneyForwardTaxCategoryHighlights_(mfSheet, mixedTaxFlags);
   const messages = [`${rows.length} 件のレシートを「マネフォ用」シートに更新しました。`];
   if (errors.length > 0) {
     messages.push(`エラー: ${errors.length} 件`);
   }
   ui.alert(messages.join('\n'));
+}
+
+function buildHeaderIndexMap_(headerRow) {
+  const map = {};
+  if (!headerRow || !Array.isArray(headerRow)) return map;
+  for (let i = 0; i < headerRow.length; i++) {
+    const key = normalizeText_(headerRow[i]);
+    if (!key || Object.prototype.hasOwnProperty.call(map, key)) continue;
+    map[key] = i;
+  }
+  return map;
+}
+
+function getRowValueByHeader_(row, headerIndexMap, headerName, fallbackIndex) {
+  if (!row || !Array.isArray(row)) return '';
+  const mappedIndex = headerIndexMap ? headerIndexMap[headerName] : undefined;
+  if (typeof mappedIndex === 'number' && mappedIndex >= 0 && mappedIndex < row.length) {
+    return row[mappedIndex];
+  }
+  if (typeof fallbackIndex === 'number' && fallbackIndex >= 0 && fallbackIndex < row.length) {
+    return row[fallbackIndex];
+  }
+  return '';
 }
 
 function getMoneyForwardSheet_(ui) {
@@ -2286,6 +2390,31 @@ function resetMoneyForwardSheet_(sheet) {
   sheet.clearContents();
   sheet.getRange(1, 1, 1, MF_CSV_HEADERS.length).setValues([MF_CSV_HEADERS]);
   sheet.setFrozenRows(1);
+  applyMoneyForwardAccountTitleValidation_(sheet);
+}
+
+function applyMoneyForwardAccountTitleValidation_(sheet) {
+  if (!sheet) return;
+
+  const accountCol = MF_CSV_HEADERS.indexOf('借方勘定科目') + 1;
+  if (accountCol <= 0) return;
+
+  const accountRuleSheet = ensureAccountRuleSheet_().sheet;
+  const ruleLastRow = accountRuleSheet.getLastRow();
+  const targetRows = Math.max(sheet.getMaxRows() - 1, 1);
+  const targetRange = sheet.getRange(2, accountCol, targetRows, 1);
+
+  if (ruleLastRow < 2) {
+    targetRange.clearDataValidations();
+    return;
+  }
+
+  const sourceRange = accountRuleSheet.getRange(2, 1, ruleLastRow - 1, 1);
+  const rule = SpreadsheetApp.newDataValidation()
+    .requireValueInRange(sourceRange, true)
+    .setAllowInvalid(true)
+    .build();
+  targetRange.setDataValidation(rule);
 }
 
 function openCsvDownloadSelector() {
@@ -2826,56 +2955,240 @@ function normalizePaymentMethod_(value) {
   return '現金';
 }
 
-function normalizeTaxCategory_(value) {
-  if (value === null || value === undefined) return '10%';
-  const text = String(value);
-  if (!text.trim()) return '10%';
+function normalizeTaxCategory_(value, taxHints) {
+  const hintSource = {};
+  if (value && typeof value === 'object') Object.assign(hintSource, value);
+  if (taxHints && typeof taxHints === 'object') Object.assign(hintSource, taxHints);
 
-  const normalized = String(text)
-    .replace(/[０-９]/g, (s) => String.fromCharCode(s.charCodeAt(0) - 0xFEE0))
-    .replace(/％/g, '%');
-  const compact = normalized.replace(/\s+/g, '');
-
-  if (compact.includes('混在あり') || compact.includes('混在')) {
+  const categorySource = value && typeof value === 'object' ? value.taxCategory : value;
+  const rawCategory = normalizeTaxEvalText_(categorySource || hintSource.taxCategory);
+  const compactCategory = rawCategory.replace(/\s+/g, '');
+  if (compactCategory.includes('混在あり') || compactCategory.includes('混在')) {
     return '混在あり';
   }
 
-  const tax8Amounts = extractTaxAmountsByRate_(normalized, 8);
-  const tax10Amounts = extractTaxAmountsByRate_(normalized, 10);
-  const has8Positive = tax8Amounts.some((amount) => amount > 0);
-  const has10Positive = tax10Amounts.some((amount) => amount > 0);
+  const parsedRate = parseTaxRatePercent_(categorySource || hintSource.taxCategory);
+  if (parsedRate === 8) return '8%';
+  if (parsedRate === 10) return '10%';
 
-  if (has8Positive && has10Positive) return '混在あり';
-  if (has10Positive && !has8Positive) return '10%';
-  if (has8Positive && !has10Positive) return '8%';
-
-  const has8Mention = compact.includes('軽減税率') || /(^|[^0-9])8%(?!\d)/.test(compact);
-  const has10Mention = /(^|[^0-9])10%(?!\d)/.test(compact);
-
-  if (has8Mention && has10Mention) return '混在あり';
-  if (has8Mention) {
-    return '8%';
+  const textParts = [];
+  if (typeof value === 'string') textParts.push(value);
+  if (value && typeof value === 'object' && value.evidence) {
+    textParts.push(String(value.evidence));
   }
+  if (hintSource.taxCategory) textParts.push(String(hintSource.taxCategory));
+  if (hintSource.evidence) textParts.push(String(hintSource.evidence));
+  const evalText = normalizeTaxEvalText_(textParts.join('\n'));
+
+  const amountSignals = buildTaxAmountSignals_(evalText, hintSource);
+  if (amountSignals.hasTax8Amount || amountSignals.hasTax10Amount) {
+    const tax8Amount = amountSignals.hasTax8Amount ? amountSignals.tax8Amount : 0;
+    const tax10Amount = amountSignals.hasTax10Amount ? amountSignals.tax10Amount : 0;
+
+    if (tax8Amount > 0 && tax10Amount > 0) return '混在あり';
+    if (tax8Amount === 0 && tax10Amount > 0) return '10%';
+    if (tax8Amount > 0 && tax10Amount === 0) return '8%';
+    if (
+      amountSignals.hasTax8Amount &&
+      amountSignals.hasTax10Amount &&
+      tax8Amount === 0 &&
+      tax10Amount === 0
+    ) {
+      return '10%';
+    }
+  }
+
+  const mentions = extractTaxMentions_(evalText);
+  if (mentions.has8Target && mentions.has10Target) return '混在あり';
+  if (mentions.has8Target && !mentions.has10Target) return '8%';
+  if (mentions.has10Target && !mentions.has8Target) return '10%';
+  if (mentions.has8Mention && mentions.has10Mention) return '混在あり';
+  if (mentions.has8Mention) return '8%';
+
+  const isLabelLike = compactCategory.length <= 12;
+  if (isLabelLike && compactCategory.includes('8%')) return '8%';
+  if (isLabelLike && compactCategory.includes('10%')) return '10%';
   return '10%';
 }
 
-function extractTaxAmountsByRate_(text, rate) {
-  const lines = String(text).split(/\r?\n/);
-  const amounts = [];
+function buildTaxAmountSignals_(text, hints) {
+  const hint8 = readTaxAmountHint_(hints, 'tax8Amount', 'hasTax8Amount');
+  const hint10 = readTaxAmountHint_(hints, 'tax10Amount', 'hasTax10Amount');
+  const tax8Amounts = extractTaxAmountsByRate_(text, 8);
+  const tax10Amounts = extractTaxAmountsByRate_(text, 10);
+
+  return {
+    hasTax8Amount: hint8.found || tax8Amounts.length > 0,
+    hasTax10Amount: hint10.found || tax10Amounts.length > 0,
+    tax8Amount: hint8.found ? hint8.amount : chooseTaxAmount_(tax8Amounts),
+    tax10Amount: hint10.found ? hint10.amount : chooseTaxAmount_(tax10Amounts)
+  };
+}
+
+function readTaxAmountHint_(hints, key, foundFlagKey) {
+  if (!hints || typeof hints !== 'object') {
+    return { found: false, amount: 0 };
+  }
+
+  if (Object.prototype.hasOwnProperty.call(hints, key)) {
+    const raw = hints[key];
+    if (raw === '' || raw === null || raw === undefined) {
+      return { found: false, amount: 0 };
+    }
+    return { found: true, amount: normalizeAmount_(raw) };
+  }
+
+  if (hints[foundFlagKey] === true) {
+    return { found: true, amount: 0 };
+  }
+  return { found: false, amount: 0 };
+}
+
+function chooseTaxAmount_(amounts) {
+  if (!amounts || amounts.length === 0) return 0;
+  return amounts.reduce((max, value) => (value > max ? value : max), 0);
+}
+
+function extractTaxMentions_(text) {
+  const lines = normalizeTaxEvalText_(text).split(/\r?\n/);
+  let has8Mention = false;
+  let has10Mention = false;
+  let has8Target = false;
+  let has10Target = false;
 
   for (const rawLine of lines) {
-    if (!rawLine || !rawLine.includes('消費税')) continue;
-    const line = String(rawLine).replace(/[￥¥]/g, '');
-    const pattern = new RegExp(`${rate}%[^0-9-]{0,16}([0-9][0-9,]*)`, 'g');
-    let match;
+    const compact = String(rawLine || '').replace(/\s+/g, '');
+    if (!compact || isTaxLegendLine_(compact)) continue;
 
-    while ((match = pattern.exec(line)) !== null) {
-      const amountText = String(match[1]).replace(/,/g, '');
-      const amount = parseInt(amountText, 10);
-      if (!isNaN(amount)) amounts.push(amount);
+    if (/(?:8%\s*対象|対象\s*8%|軽減税率[^0-9]*対象)/.test(compact)) {
+      has8Target = true;
+    }
+    if (/(?:10%\s*対象|対象\s*10%)/.test(compact)) {
+      has10Target = true;
+    }
+    if (compact.includes('軽減税率') || /(^|[^0-9])8%(?!\d)/.test(compact)) {
+      has8Mention = true;
+    }
+    if (/(^|[^0-9])10%(?!\d)/.test(compact)) {
+      has10Mention = true;
     }
   }
-  return amounts;
+
+  return {
+    has8Mention: has8Mention,
+    has10Mention: has10Mention,
+    has8Target: has8Target,
+    has10Target: has10Target
+  };
+}
+
+function isTaxLegendLine_(compactLine) {
+  if (!compactLine) return false;
+  const withoutRate = compactLine.replace(/\d+%/g, '');
+  const hasAmount = /\d/.test(withoutRate);
+  if (hasAmount) return false;
+  return /軽減税率.*適用|適用商品|対象商品|凡例|★印|※|注記|注:/.test(compactLine);
+}
+
+function extractTaxAmountsByRate_(text, rate) {
+  const lines = normalizeTaxEvalText_(text).split(/\r?\n/);
+  const amounts = [];
+  const ratePattern = new RegExp(`(?:^|[^0-9])${rate}\\s*%(?!\\d)`);
+  const targetPattern = new RegExp(`(?:${rate}\\s*%\\s*対象|対象\\s*${rate}\\s*%)`);
+  const taxKeywordPattern = /(内消費税(?:等)?|消費税(?:額)?|内税(?:額)?|税額|外税)/;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = String(lines[i] || '');
+    const compact = line.replace(/\s+/g, '');
+    if (!compact || isTaxLegendLine_(compact)) continue;
+
+    if (ratePattern.test(compact) && taxKeywordPattern.test(line)) {
+      const lineAmounts = extractAmountsFromLine_(line);
+      if (lineAmounts.length > 0) {
+        amounts.push(lineAmounts[lineAmounts.length - 1]);
+      }
+    }
+
+    if (!targetPattern.test(compact)) continue;
+
+    const baseAmount = extractBaseAmountByRate_(line, rate);
+    if (baseAmount !== null) {
+      amounts.push(baseAmount);
+    }
+
+    for (let offset = -1; offset <= 2; offset++) {
+      const index = i + offset;
+      if (index < 0 || index >= lines.length) continue;
+      const nearLine = String(lines[index] || '');
+      const nearCompact = nearLine.replace(/\s+/g, '');
+      if (!nearCompact || isTaxLegendLine_(nearCompact)) continue;
+      if (!taxKeywordPattern.test(nearLine)) continue;
+      const nearAmounts = extractAmountsFromLine_(nearLine);
+      if (nearAmounts.length > 0) {
+        amounts.push(nearAmounts[nearAmounts.length - 1]);
+      }
+    }
+  }
+
+  return amounts.filter((amount) => !isNaN(amount));
+}
+
+function extractAmountsFromLine_(line) {
+  const normalized = normalizeTaxEvalText_(line).replace(/,/g, '');
+  const matches = normalized.match(/\d+/g);
+  if (!matches) return [];
+  return matches
+    .map((value) => parseInt(value, 10))
+    .filter((value) => !isNaN(value));
+}
+
+function extractBaseAmountByRate_(line, rate) {
+  const normalized = normalizeTaxEvalText_(line).replace(/,/g, '');
+  const pattern = new RegExp(`(?:${rate}\\s*%\\s*対象|対象\\s*${rate}\\s*%)[^0-9]{0,8}([0-9][0-9]*)`);
+  const match = normalized.match(pattern);
+  if (!match) return null;
+  const amount = parseInt(match[1], 10);
+  return isNaN(amount) ? null : amount;
+}
+
+function normalizeTaxEvalText_(value) {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .replace(/[０-９]/g, (s) => String.fromCharCode(s.charCodeAt(0) - 0xFEE0))
+    .replace(/[％﹪]/g, '%')
+    .replace(/[￥¥]/g, '¥')
+    .replace(/[，]/g, ',')
+    .replace(/（/g, '(')
+    .replace(/）/g, ')');
+}
+
+function parseTaxRatePercent_(value) {
+  if (value === null || value === undefined) return null;
+
+  let numeric = null;
+  if (typeof value === 'number' && isFinite(value)) {
+    numeric = value;
+  } else {
+    const text = normalizeTaxEvalText_(value).replace(/\s+/g, '');
+    if (!text) return null;
+
+    if (text.includes('8%') && !text.includes('10%')) return 8;
+    if (text.includes('10%') && !text.includes('8%')) return 10;
+
+    const numericText = text
+      .replace(/%/g, '')
+      .replace(/[^0-9.+-]/g, '');
+    if (!numericText) return null;
+
+    const parsed = Number(numericText);
+    if (!isFinite(parsed)) return null;
+    numeric = parsed;
+  }
+
+  const percent = Math.abs(numeric) <= 1 ? numeric * 100 : numeric;
+  if (Math.abs(percent - 8) < 0.01) return 8;
+  if (Math.abs(percent - 10) < 0.01) return 10;
+  return null;
 }
 
 function normalizeCardInfo_(value, paymentMethod) {
@@ -2894,6 +3207,14 @@ function normalizeCardInfo_(value, paymentMethod) {
 }
 
 function resolveMoneyForwardTaxCategory_(value) {
+  const parsedRate = parseTaxRatePercent_(value);
+  if (parsedRate === 8) return MF_TAX_CATEGORY_REDUCED;
+  if (parsedRate === 10) return MF_TAX_CATEGORY_STANDARD;
+
+  const compact = normalizeTaxEvalText_(value).replace(/\s+/g, '');
+  if (compact.includes('混在')) return MF_TAX_CATEGORY_STANDARD;
+  if (compact.includes('8%') && !compact.includes('10%')) return MF_TAX_CATEGORY_REDUCED;
+  if (compact.includes('10%') && !compact.includes('8%')) return MF_TAX_CATEGORY_STANDARD;
   return normalizeTaxCategory_(value) === '8%'
     ? MF_TAX_CATEGORY_REDUCED
     : MF_TAX_CATEGORY_STANDARD;
@@ -3278,13 +3599,12 @@ function buildMoneyForwardRow_(transactionNo, data, partnerName, fileUrl, settin
     data.paymentMethod === 'クレカ'
       ? (settings?.creditAccountCard || '未払金')
       : (settings?.creditAccountOther || '役員借入金');
-  const creditTaxCategory = normalizeText_(creditAccount) === '事業主借'
-    ? '対象外'
-    : taxCategory;
+  const creditTaxCategory = '対象外';
   const creditSubAccount =
     data.paymentMethod === 'クレカ'
       ? resolveCreditSubAccount_(settings, data)
       : '';
+  const summary = buildMoneyForwardSummary_(settings, data.summary, partnerName);
 
   return [
     transactionNo,
@@ -3305,7 +3625,7 @@ function buildMoneyForwardRow_(transactionNo, data, partnerName, fileUrl, settin
     '',
     amount,
     0,
-    data.summary || partnerName,
+    summary,
     memoUrl,
     '',
     '',
@@ -3315,6 +3635,36 @@ function buildMoneyForwardRow_(transactionNo, data, partnerName, fileUrl, settin
     '',
     ''
   ];
+}
+
+function buildMoneyForwardSummary_(settings, summary, partnerName) {
+  const summaryText = normalizeText_(summary);
+  const partnerText = normalizeText_(partnerName);
+  const modeRaw = normalizeText_(settings?.mfSummaryMode);
+  const mode = MF_SUMMARY_MODE_CANDIDATES.includes(modeRaw)
+    ? modeRaw
+    : MF_SUMMARY_MODE_CANDIDATES[0];
+
+  if (mode === '取引先名') return partnerText;
+  if (mode === '取引先名＋購入内容') {
+    if (partnerText && summaryText) {
+      if (partnerText === summaryText) return partnerText;
+      return `${partnerText} ${summaryText}`;
+    }
+    return partnerText || summaryText;
+  }
+
+  // 既存実装（購入内容優先。空なら取引先名）
+  return summaryText || partnerText;
+}
+
+function applyMoneyForwardTaxCategoryHighlights_(sheet, mixedTaxFlags) {
+  if (!sheet || !mixedTaxFlags || mixedTaxFlags.length === 0) return;
+  const taxCategoryCol = MF_CSV_HEADERS.indexOf('借方税区分') + 1;
+  if (taxCategoryCol <= 0) return;
+
+  const backgrounds = mixedTaxFlags.map((isMixed) => [isMixed ? MIXED_TAX_CELL_COLOR : null]);
+  sheet.getRange(2, taxCategoryCol, mixedTaxFlags.length, 1).setBackgrounds(backgrounds);
 }
 
 function resolveCreditSubAccount_(settings, data) {
@@ -3392,6 +3742,8 @@ function showDownloadDialog_(filename, csvContent) {
 function callGeminiApi(base64Data, mimeType, apiKey) {
   const modelName = getModelName_();
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+  const taxAnalysis = callGeminiTaxCategoryApi_(endpoint, base64Data, mimeType);
+  const taxHintSection = buildTaxCategoryHintSection_(taxAnalysis);
 
   const prompt = `
 このファイル（画像またはPDF）はレシート／領収書／請求書です。
@@ -3487,8 +3839,9 @@ function callGeminiApi(base64Data, mimeType, apiKey) {
 
 【最優先ルール】
 - 税率の文字（8% / 10%）の出現だけでは判定しない。
-- 「内消費税(8%)」「内消費税(10%)」「消費税額」等の“税額”を根拠に判定する。
+- 「内消費税(8%)」「内消費税(10%)」「内消費税等」「消費税」「消費税額」「内税」「外税」「税額」等の“税額”を根拠に判定する。
 - 注意書き・凡例（例：「★印は軽減税率(8%)適用の商品です」）は判定に使わない。
+- 「8%対象」「10%対象」「外税(10%対象)」等の税率別集計ブロックは根拠に使う（同一行または前後2行以内の税額を同一ブロックとして扱う）。
 
 【内部的に行う抽出（出力しない）】
 - tax8Amount：8%の税額
@@ -3502,10 +3855,15 @@ function callGeminiApi(base64Data, mimeType, apiKey) {
 - tax8Amount > 0 かつ tax10Amount == 0 → 「8%」
 - tax8Amount == 0 かつ tax10Amount == 0 → 「10%」
 - 税額が見つからない場合:
+  - 8%対象と10%対象の両方がある → 「混在あり」
+  - 8%対象のみある → 「8%」
+  - 10%対象のみある → 「10%」
   - 8%と10%の両方の税率表記がある → 「混在あり」
   - 10%のみ明確 → 「10%」
   - 8%のみ明確 → 「8%」
   - それ以外 → 「10%」
+
+${taxHintSection}
 
 7) amount（税込合計）
 - 支払総額（税込）の整数
@@ -3518,6 +3876,27 @@ function callGeminiApi(base64Data, mimeType, apiKey) {
 {"paymentDate":"2026/01/18","paymentMethod":"クレカ","cardInfo":"カード(2235)","vendorName":"ENEOS","invoiceNumber":"T1234567890123","summary":"ガソリン代","taxCategory":"10%","amount":4500}
   `;
 
+  const response = callGeminiWithPrompt_(endpoint, prompt, base64Data, mimeType, 'レシート抽出');
+  if (!response) return null;
+
+  const normalized = normalizeReceiptExtraction_(response.parsed, taxAnalysis);
+  if (normalized && taxAnalysis && taxAnalysis.taxCategory) {
+    normalized.taxCategory = normalizeTaxCategory_(taxAnalysis.taxCategory, taxAnalysis);
+  }
+  if (normalized && !normalized.invoiceNumber) {
+    normalized.invoiceNumber = extractInvoiceNumberFromText_(response.text);
+  }
+  return normalized;
+}
+
+function callGeminiTaxCategoryApi_(endpoint, base64Data, mimeType) {
+  const prompt = buildTaxCategoryPrompt_();
+  const response = callGeminiWithPrompt_(endpoint, prompt, base64Data, mimeType, '税率判定');
+  if (!response || !response.parsed) return null;
+  return normalizeTaxAnalysisResult_(response.parsed);
+}
+
+function callGeminiWithPrompt_(endpoint, prompt, base64Data, mimeType, contextLabel) {
   const payload = {
     "contents": [{
       "parts": [
@@ -3534,28 +3913,127 @@ function callGeminiApi(base64Data, mimeType, apiKey) {
     "muteHttpExceptions": true
   };
 
-  const response = UrlFetchApp.fetch(endpoint, options);
-  const json = JSON.parse(response.getContentText());
-
-  if (json.error) {
-    Logger.log(`API Error: ${JSON.stringify(json.error)}`);
+  try {
+    const response = UrlFetchApp.fetch(endpoint, options);
+    const json = JSON.parse(response.getContentText());
+    if (json.error) {
+      Logger.log(`${contextLabel} API Error: ${JSON.stringify(json.error)}`);
+      return null;
+    }
+    const text = json?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!text) return null;
+    return {
+      text: text,
+      parsed: extractJsonFromText_(text)
+    };
+  } catch (e) {
+    Logger.log(`${contextLabel} API Error: ${e.message}`);
     return null;
   }
-
-  if (json.candidates && json.candidates[0].content && json.candidates[0].content.parts) {
-    const text = json.candidates[0].content.parts[0].text;
-    const parsed = extractJsonFromText_(text);
-    const normalized = normalizeReceiptExtraction_(parsed);
-    if (normalized && !normalized.invoiceNumber) {
-      normalized.invoiceNumber = extractInvoiceNumberFromText_(text);
-    }
-    return normalized;
-  }
-
-  return null;
 }
 
-function normalizeReceiptExtraction_(data) {
+function buildTaxCategoryPrompt_() {
+  return `
+このファイル（画像またはPDF）はレシート／領収書／請求書です。
+税率判定専用タスクとして、消費税区分だけを抽出してください。
+返答はJSONのみ。前後の説明は禁止。キー順は固定。余計なキーは禁止。
+
+出力スキーマ（キー順固定）:
+{"taxCategory":"10%|8%|混在あり","tax8Amount":0,"tax10Amount":0,"tax8Base":0,"tax10Base":0,"evidence":"","confidence":0}
+
+判定ルール:
+- 税率文字（8%/10%）だけでは判定しない。税額根拠を優先する。
+- 税額候補: 「内消費税(8%)」「内消費税(10%)」「内消費税等」「消費税」「消費税額」「内税」「外税」「税額」。
+- 税率別集計ブロック候補: 「8%対象」「10%対象」「軽」「外税(10%対象)」。
+- 税率別ブロックは、同一行または前後2行以内を同一ブロックとして読み、税額・対象額を対応付ける。
+- 注意書き・凡例（例: 「★印は軽減税率(8%)適用の商品です」）は根拠に使わない。
+- tax8Amount/tax10Amount は税額。見つからない場合は 0。
+- tax8Base/tax10Base は税率別の課税対象額。見つからない場合は 0。
+- taxCategory 判定:
+  - tax8Amount > 0 かつ tax10Amount > 0 → 混在あり
+  - tax8Amount == 0 かつ tax10Amount > 0 → 10%
+  - tax8Amount > 0 かつ tax10Amount == 0 → 8%
+  - 税額が両方 0 の場合:
+    - 8%対象と10%対象の両方がある → 混在あり
+    - 8%対象のみある → 8%
+    - 10%対象のみある → 10%
+    - 8%と10%の両方表記のみある → 混在あり
+    - 8%のみ表記がある → 8%
+    - それ以外 → 10%
+- evidence には、実際に根拠として使った行を最大2行だけ短く入れる。
+- confidence は 0〜1 の数値。
+`;
+}
+
+function normalizeTaxAnalysisResult_(data) {
+  if (!data || typeof data !== 'object') return null;
+
+  const hasTax8Amount = hasTaxFieldValue_(data, 'tax8Amount');
+  const hasTax10Amount = hasTaxFieldValue_(data, 'tax10Amount');
+  const tax8Amount = hasTax8Amount ? normalizeAmount_(data.tax8Amount) : 0;
+  const tax10Amount = hasTax10Amount ? normalizeAmount_(data.tax10Amount) : 0;
+
+  const base8Found = hasTaxFieldValue_(data, 'tax8Base');
+  const base10Found = hasTaxFieldValue_(data, 'tax10Base');
+  const tax8Base = base8Found ? normalizeAmount_(data.tax8Base) : 0;
+  const tax10Base = base10Found ? normalizeAmount_(data.tax10Base) : 0;
+  const evidence = normalizeText_(data.evidence);
+
+  const normalized = {
+    tax8Amount: tax8Amount,
+    tax10Amount: tax10Amount,
+    tax8Base: tax8Base,
+    tax10Base: tax10Base,
+    hasTax8Amount: hasTax8Amount,
+    hasTax10Amount: hasTax10Amount,
+    evidence: evidence,
+    confidence: normalizeTaxConfidence_(data.confidence)
+  };
+  normalized.taxCategory = normalizeTaxCategory_(data.taxCategory, normalized);
+  return normalized;
+}
+
+function hasTaxFieldValue_(data, key) {
+  if (!data || typeof data !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(data, key)) return false;
+  return data[key] !== '' && data[key] !== null && data[key] !== undefined;
+}
+
+function normalizeTaxConfidence_(value) {
+  if (value === '' || value === null || value === undefined) return 0;
+  const numeric = Number(String(value).replace(/[^0-9.]/g, ''));
+  if (!isFinite(numeric)) return 0;
+  const scaled = numeric > 1 ? numeric / 100 : numeric;
+  const clamped = Math.max(0, Math.min(1, scaled));
+  return Math.round(clamped * 100) / 100;
+}
+
+function buildTaxCategoryHintSection_(taxAnalysis) {
+  if (!taxAnalysis) {
+    return `
+【taxCategory追加ルール】
+- 先行税率判定結果が取得できない場合は、上記ルールのみで判定する。`;
+  }
+
+  const evidence = taxAnalysis.evidence || '不明';
+  const tax8Amount = taxAnalysis.hasTax8Amount ? taxAnalysis.tax8Amount : '未検出';
+  const tax10Amount = taxAnalysis.hasTax10Amount ? taxAnalysis.tax10Amount : '未検出';
+
+  return `
+【taxCategory追加ルール（先行税率判定を最優先）】
+- 先行判定結果:
+  - taxCategory: ${taxAnalysis.taxCategory}
+  - tax8Amount: ${tax8Amount}
+  - tax10Amount: ${tax10Amount}
+  - tax8Base: ${taxAnalysis.tax8Base}
+  - tax10Base: ${taxAnalysis.tax10Base}
+  - evidence: ${evidence}
+  - confidence: ${taxAnalysis.confidence}
+- taxCategory は先行判定結果を最優先で採用する。
+- 先行判定が不明な場合のみ通常ルールで最終判定する。`;
+}
+
+function normalizeReceiptExtraction_(data, taxHints) {
   if (!data) return null;
   const amountRaw = data.amount;
   const hasAmount =
@@ -3567,7 +4045,7 @@ function normalizeReceiptExtraction_(data) {
     vendorName: normalizeText_(data.vendorName),
     invoiceNumber: normalizeInvoiceNumber_(data.invoiceNumber),
     summary: normalizeText_(data.summary),
-    taxCategory: normalizeTaxCategory_(data.taxCategory),
+    taxCategory: normalizeTaxCategory_(data.taxCategory, taxHints),
     amount: hasAmount ? normalizeAmount_(amountRaw) : 0
   };
 }
